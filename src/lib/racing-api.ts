@@ -14,6 +14,11 @@ function authHeader(): string {
   return `Basic ${encoded}`;
 }
 
+// Throttle: only delay when calls are made in rapid succession.
+// A single isolated call has zero added latency.
+const MIN_CALL_INTERVAL_MS = 1000;
+let lastCallAt = 0;
+
 async function racingFetch<T>(
   path: string,
   params?: Record<string, string>,
@@ -23,6 +28,12 @@ async function racingFetch<T>(
       'RACING_API_BASE_URL, RACING_API_USERNAME, and RACING_API_PASSWORD must be set in .env.local',
     );
   }
+
+  const elapsed = Date.now() - lastCallAt;
+  if (lastCallAt > 0 && elapsed < MIN_CALL_INTERVAL_MS) {
+    await new Promise<void>(r => setTimeout(r, MIN_CALL_INTERVAL_MS - elapsed));
+  }
+  lastCallAt = Date.now();
 
   const url = new URL(`${BASE_URL}${path}`);
   if (params) {
@@ -144,16 +155,19 @@ export interface UpcomingRacesResponse {
 
 /**
  * Fetch race results for a given date (YYYY-MM-DD).
+ * Defaults to region=usa. Pass region='' to fetch all regions.
  * Optionally filter by track/course name.
  */
 export async function getResults(
   date: string,
   track?: string,
+  region = 'usa',
 ): Promise<ResultsResponse> {
   const params: Record<string, string> = {
     start_date: date,
     end_date: date,
   };
+  if (region) params.region = region;
   if (track) params.course = track;
   return racingFetch<ResultsResponse>('/v1/results', params);
 }

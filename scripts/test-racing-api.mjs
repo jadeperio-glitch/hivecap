@@ -42,109 +42,30 @@ if (!BASE_URL || !USERNAME || !PASSWORD) {
 const encoded = Buffer.from(`${USERNAME}:${PASSWORD}`).toString('base64');
 const headers = { Authorization: `Basic ${encoded}`, Accept: 'application/json' };
 
-const today = new Date().toISOString().split('T')[0];
-const yesterday = new Date(Date.now() - 864e5).toISOString().split('T')[0];
+// ── 1 second delay to avoid rate limiting from any previous requests ─────────
+await new Promise(r => setTimeout(r, 1000));
 
-// ── Shared helpers ────────────────────────────────────────────────────────────
+// ── Focused call: region=usa, 2026-03-26 ─────────────────────────────────────
+const DATE = '2026-03-26';
+const url = `${BASE_URL}/v1/results?start_date=${DATE}&end_date=${DATE}&region=usa`;
 
-// Full dump — used for global baseline
-async function fetchAndLog(url, label) {
-  console.log(`\n${'─'.repeat(60)}`);
-  console.log(`${label}`);
-  console.log(`GET ${url}`);
-  console.log('─'.repeat(60));
+console.log(`\nGET ${url}\n`);
 
-  const res = await fetch(url, { headers });
-  console.log(`HTTP ${res.status} ${res.statusText}`);
+const res = await fetch(url, { headers });
+console.log(`HTTP ${res.status} ${res.statusText}`);
 
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    console.error('Error body:', body || '(empty)');
-    return;
-  }
-
-  const data = await res.json();
-
-  console.log('\nTop-level keys:', Object.keys(data));
-
-  const firstArrayKey = Object.keys(data).find(k => Array.isArray(data[k]));
-
-  if (firstArrayKey) {
-    const arr = data[firstArrayKey];
-    console.log(`\ndata.${firstArrayKey}: ${arr.length} item(s)`);
-    if (arr.length > 0) {
-      const first = arr[0];
-      console.log('First item keys:', Object.keys(first));
-      console.log('\nFirst item (full):');
-      console.log(JSON.stringify(first, null, 2));
-
-      if (Array.isArray(first.runners) && first.runners.length > 0) {
-        console.log('\nFirst runner:');
-        console.log(JSON.stringify(first.runners[0], null, 2));
-      }
-    } else {
-      console.log(`No ${firstArrayKey} returned — try a different date.`);
-    }
-  } else {
-    console.log('\nFull response:');
-    console.log(JSON.stringify(data, null, 2));
-  }
+if (!res.ok) {
+  const body = await res.text().catch(() => '');
+  console.error('Error body:', body || '(empty)');
+  process.exit(1);
 }
 
-// Summary only — count + first item's course and region
-async function fetchAndLogSummary(url, label) {
-  console.log(`\n${'─'.repeat(60)}`);
-  console.log(`${label}`);
-  console.log(`GET ${url}`);
-  console.log('─'.repeat(60));
+const data = await res.json();
+const results = data.results ?? [];
 
-  const res = await fetch(url, { headers });
-  console.log(`HTTP ${res.status} ${res.statusText}`);
+console.log(`\nResult count : ${results.length}`);
+console.log();
 
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    console.error('Error body:', body || '(empty)');
-    return;
-  }
-
-  const data = await res.json();
-  const results = data.results ?? [];
-
-  console.log(`Result count : ${results.length}`);
-  if (results.length > 0) {
-    console.log(`First course : ${results[0].course}`);
-    console.log(`First region : ${results[0].region}`);
-  }
-}
-
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
-// ── Call 0: Global baseline (no region filter, today) ────────────────────────
-await fetchAndLog(
-  `${BASE_URL}/v1/results?start_date=${today}&end_date=${today}`,
-  'Global results — no region filter, today',
-);
-
-await sleep(300);
-
-// ── Call 1: region=us, today ──────────────────────────────────────────────────
-await fetchAndLogSummary(
-  `${BASE_URL}/v1/results?start_date=${today}&end_date=${today}&region=us`,
-  `region=us, today (${today})`,
-);
-
-await sleep(300);
-
-// ── Call 2: region=usa, yesterday ────────────────────────────────────────────
-await fetchAndLogSummary(
-  `${BASE_URL}/v1/results?start_date=${yesterday}&end_date=${yesterday}&region=usa`,
-  `region=usa, yesterday (${yesterday})`,
-);
-
-await sleep(300);
-
-// ── Call 3: region=us, yesterday ─────────────────────────────────────────────
-await fetchAndLogSummary(
-  `${BASE_URL}/v1/results?start_date=${yesterday}&end_date=${yesterday}&region=us`,
-  `region=us, yesterday (${yesterday})`,
-);
+results.slice(0, 3).forEach((race, i) => {
+  console.log(`[${i + 1}] course: ${race.course}  |  region: ${race.region}`);
+});
