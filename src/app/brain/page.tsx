@@ -83,7 +83,7 @@ export default function BrainPage() {
 
   // Conversation persistence state
   const [conversationId, setConversationId] = useState<string | null>(null);
-  const [isLoadingConversation, setIsLoadingConversation] = useState(true);
+  const [isLoadingConversation, setIsLoadingConversation] = useState(false);
 
   // Document upload state
   const [documents, setDocuments] = useState<UserDocument[]>([]);
@@ -118,30 +118,40 @@ export default function BrainPage() {
     try {
       const supabase = createClient();
 
-      // Load most recent conversation by updated_at
-      const { data: conv } = await supabase
+      const { data: conv, error: convErr } = await supabase
         .from("conversations")
         .select("id")
         .order("updated_at", { ascending: false })
         .limit(1)
         .maybeSingle();
 
-      if (conv) {
-        setConversationId(conv.id);
+      if (convErr) {
+        console.error("[brain] conversations query error:", convErr.message, convErr);
+        return;
+      }
+      console.log("[brain] fetched conversation_id:", conv?.id ?? null);
 
-        // Load its messages in chronological order
-        const { data: msgs } = await supabase
-          .from("messages")
-          .select("role, content")
-          .eq("conversation_id", conv.id)
-          .order("created_at", { ascending: true });
+      if (!conv) return; // no prior conversations — stay on welcome message
 
-        if (msgs && msgs.length > 0) {
-          setMessages(msgs as Message[]);
-        }
+      setConversationId(conv.id);
+
+      const { data: msgs, error: msgsErr } = await supabase
+        .from("messages")
+        .select("role, content")
+        .eq("conversation_id", conv.id)
+        .order("created_at", { ascending: true });
+
+      if (msgsErr) {
+        console.error("[brain] messages query error:", msgsErr.message, msgsErr);
+        return;
+      }
+      console.log("[brain] messages returned:", msgs?.length ?? 0);
+
+      if (msgs && msgs.length > 0) {
+        setMessages(msgs as Message[]);
       }
     } catch (err) {
-      console.warn("[brain] Could not load conversation:", err);
+      console.error("[brain] fetchRecentConversation threw:", err);
     } finally {
       setIsLoadingConversation(false);
     }
@@ -487,24 +497,16 @@ export default function BrainPage() {
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 md:px-6 py-6">
         <div className="max-w-4xl mx-auto">
-          {isLoadingConversation ? (
-            <div className="flex items-center justify-center py-16 text-charcoal/30 dark:text-cream/30 text-sm">
-              Loading conversation…
+          {messages.map((message, i) => (
+            <MessageBubble key={i} message={message} />
+          ))}
+          {isLoading && <TypingIndicator />}
+          {error && (
+            <div className="flex justify-center mb-4">
+              <div className="bg-red-900/20 border border-red-500/30 rounded-lg px-4 py-2">
+                <p className="text-red-400 text-xs">{error}</p>
+              </div>
             </div>
-          ) : (
-            <>
-              {messages.map((message, i) => (
-                <MessageBubble key={i} message={message} />
-              ))}
-              {isLoading && <TypingIndicator />}
-              {error && (
-                <div className="flex justify-center mb-4">
-                  <div className="bg-red-900/20 border border-red-500/30 rounded-lg px-4 py-2">
-                    <p className="text-red-400 text-xs">{error}</p>
-                  </div>
-                </div>
-              )}
-            </>
           )}
           <div ref={messagesEndRef} />
         </div>
@@ -521,12 +523,12 @@ export default function BrainPage() {
               onKeyDown={handleKeyDown}
               placeholder="Ask about a race, horse, or wagering strategy…"
               rows={1}
-              disabled={isLoading || isLoadingConversation}
+              disabled={isLoading}
               className="flex-1 bg-transparent text-charcoal dark:text-cream placeholder:text-charcoal/25 dark:placeholder:text-cream/25 text-sm resize-none leading-relaxed outline-none disabled:opacity-50 max-h-40 py-0.5"
             />
             <button
               onClick={sendMessage}
-              disabled={isLoading || isLoadingConversation || !input.trim()}
+              disabled={isLoading || !input.trim()}
               className="flex-shrink-0 w-9 h-9 bg-gold rounded-xl flex items-center justify-center hover:bg-gold/85 disabled:opacity-40 disabled:cursor-not-allowed transition-all duration-200 shadow-md shadow-gold/20"
             >
               <svg
