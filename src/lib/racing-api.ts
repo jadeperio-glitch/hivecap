@@ -1,15 +1,16 @@
 /**
  * The Racing API — typed client wrapper
  * Server-side only. Never import this in client components.
- * Env vars: RACING_API_KEY, RACING_API_BASE_URL
+ * Env vars: RACING_API_USERNAME, RACING_API_PASSWORD, RACING_API_BASE_URL
  */
 
-const BASE_URL = (process.env.RACING_API_BASE_URL ?? '').replace(/\/$/, '');
-const API_KEY = process.env.RACING_API_KEY ?? '';
+const BASE_URL = (process.env.RACING_API_BASE_URL  ?? '').replace(/\/$/, '');
+const USERNAME = process.env.RACING_API_USERNAME ?? '';
+const PASSWORD = process.env.RACING_API_PASSWORD ?? '';
 
-// The Racing API uses HTTP Basic Auth: key as username, empty password
+// The Racing API uses HTTP Basic Auth: base64(username:password)
 function authHeader(): string {
-  const encoded = Buffer.from(`${API_KEY}:`).toString('base64');
+  const encoded = Buffer.from(`${USERNAME}:${PASSWORD}`).toString('base64');
   return `Basic ${encoded}`;
 }
 
@@ -17,9 +18,9 @@ async function racingFetch<T>(
   path: string,
   params?: Record<string, string>,
 ): Promise<T> {
-  if (!BASE_URL || !API_KEY) {
+  if (!BASE_URL || !USERNAME || !PASSWORD) {
     throw new Error(
-      'RACING_API_BASE_URL and RACING_API_KEY must be set in .env.local',
+      'RACING_API_BASE_URL, RACING_API_USERNAME, and RACING_API_PASSWORD must be set in .env.local',
     );
   }
 

@@ -2,7 +2,7 @@
  * Quick smoke-test for The Racing API.
  * Run from project root: node scripts/test-racing-api.mjs
  *
- * Reads RACING_API_KEY and RACING_API_BASE_URL from .env.local directly —
+ * Reads RACING_API_USERNAME, RACING_API_PASSWORD, and RACING_API_BASE_URL from .env.local directly —
  * no dev server needed.
  */
 
@@ -26,16 +26,17 @@ try {
   process.exit(1);
 }
 
-const BASE_URL = (env.RACING_API_BASE_URL ?? '').replace(/\/$/, '');
-const API_KEY = env.RACING_API_KEY ?? '';
+const BASE_URL  = (env.RACING_API_BASE_URL  ?? '').replace(/\/$/, '');
+const USERNAME  = env.RACING_API_USERNAME  ?? '';
+const PASSWORD  = env.RACING_API_PASSWORD  ?? '';
 
-if (!BASE_URL || !API_KEY) {
-  console.error('RACING_API_BASE_URL and RACING_API_KEY must be set in .env.local');
+if (!BASE_URL || !USERNAME || !PASSWORD) {
+  console.error('RACING_API_BASE_URL, RACING_API_USERNAME, and RACING_API_PASSWORD must be set in .env.local');
   process.exit(1);
 }
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
-const encoded = Buffer.from(`${API_KEY}:`).toString('base64');
+const encoded = Buffer.from(`${USERNAME}:${PASSWORD}`).toString('base64');
 const headers = { Authorization: `Basic ${encoded}`, Accept: 'application/json' };
 
 // ── Fetch today's results ────────────────────────────────────────────────────
