@@ -4,6 +4,8 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
+import { HiveCapLogo } from "@/components/HiveCapLogo";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 const VALID_INVITE_CODE = "maxplayer";
 
@@ -67,21 +69,23 @@ export default function SignupPage() {
   }
 
   return (
-    <main className="min-h-screen bg-charcoal flex flex-col items-center justify-center px-4">
+    <main className="relative min-h-screen bg-cream dark:bg-charcoal flex flex-col items-center justify-center px-4">
+      {/* Theme toggle */}
+      <div className="absolute top-4 right-4">
+        <ThemeToggle />
+      </div>
+
       {/* Logo */}
-      <Link href="/" className="flex items-center gap-2 mb-10">
-        <span className="text-2xl">🐝</span>
-        <span className="font-playfair text-2xl font-bold text-gold tracking-wide">
-          HiveCap
-        </span>
+      <Link href="/" className="mb-10">
+        <HiveCapLogo size="md" />
       </Link>
 
       {/* Card */}
-      <div className="w-full max-w-md bg-[#161616] border border-gold/20 rounded-2xl p-8 shadow-2xl shadow-black/50">
-        <h1 className="font-playfair text-2xl font-bold text-cream mb-1">
+      <div className="w-full max-w-md bg-white dark:bg-[#161616] border border-gold/20 rounded-2xl p-8 shadow-2xl shadow-black/10 dark:shadow-black/50">
+        <h1 className="font-playfair text-2xl font-bold text-charcoal dark:text-cream mb-1">
           Request Access
         </h1>
-        <p className="text-cream/50 text-sm mb-8">
+        <p className="text-charcoal/50 dark:text-cream/50 text-sm mb-8">
           An invite code is required to create an account
         </p>
 
@@ -90,7 +94,7 @@ export default function SignupPage() {
           <div>
             <label
               htmlFor="email"
-              className="block text-xs font-semibold text-cream/60 uppercase tracking-wider mb-2"
+              className="block text-xs font-semibold text-charcoal/60 dark:text-cream/60 uppercase tracking-wider mb-2"
             >
               Email
             </label>
@@ -101,7 +105,7 @@ export default function SignupPage() {
               onChange={(e) => setEmail(e.target.value)}
               required
               placeholder="you@example.com"
-              className="w-full bg-charcoal border border-gold/20 rounded-lg px-4 py-3 text-cream placeholder:text-cream/25 text-sm focus:border-gold/60 focus:ring-1 focus:ring-gold/30 transition-colors duration-200 outline-none"
+              className="w-full bg-cream dark:bg-charcoal border border-gold/20 rounded-lg px-4 py-3 text-charcoal dark:text-cream placeholder:text-charcoal/25 dark:placeholder:text-cream/25 text-sm focus:border-gold/60 focus:ring-1 focus:ring-gold/30 transition-colors duration-200 outline-none"
             />
           </div>
 
@@ -109,7 +113,7 @@ export default function SignupPage() {
           <div>
             <label
               htmlFor="password"
-              className="block text-xs font-semibold text-cream/60 uppercase tracking-wider mb-2"
+              className="block text-xs font-semibold text-charcoal/60 dark:text-cream/60 uppercase tracking-wider mb-2"
             >
               Password
             </label>
@@ -121,7 +125,7 @@ export default function SignupPage() {
               required
               minLength={6}
               placeholder="Min. 6 characters"
-              className="w-full bg-charcoal border border-gold/20 rounded-lg px-4 py-3 text-cream placeholder:text-cream/25 text-sm focus:border-gold/60 focus:ring-1 focus:ring-gold/30 transition-colors duration-200 outline-none"
+              className="w-full bg-cream dark:bg-charcoal border border-gold/20 rounded-lg px-4 py-3 text-charcoal dark:text-cream placeholder:text-charcoal/25 dark:placeholder:text-cream/25 text-sm focus:border-gold/60 focus:ring-1 focus:ring-gold/30 transition-colors duration-200 outline-none"
             />
           </div>
 
@@ -129,7 +133,7 @@ export default function SignupPage() {
           <div>
             <label
               htmlFor="inviteCode"
-              className="block text-xs font-semibold text-cream/60 uppercase tracking-wider mb-2"
+              className="block text-xs font-semibold text-charcoal/60 dark:text-cream/60 uppercase tracking-wider mb-2"
             >
               Invite Code
             </label>
@@ -140,7 +144,7 @@ export default function SignupPage() {
               onChange={(e) => setInviteCode(e.target.value)}
               required
               placeholder="Enter your invite code"
-              className="w-full bg-charcoal border border-gold/20 rounded-lg px-4 py-3 text-cream placeholder:text-cream/25 text-sm focus:border-gold/60 focus:ring-1 focus:ring-gold/30 transition-colors duration-200 outline-none"
+              className="w-full bg-cream dark:bg-charcoal border border-gold/20 rounded-lg px-4 py-3 text-charcoal dark:text-cream placeholder:text-charcoal/25 dark:placeholder:text-cream/25 text-sm focus:border-gold/60 focus:ring-1 focus:ring-gold/30 transition-colors duration-200 outline-none"
             />
           </div>
 
@@ -161,7 +165,7 @@ export default function SignupPage() {
           </button>
         </form>
 
-        <p className="text-center text-cream/40 text-sm mt-6">
+        <p className="text-center text-charcoal/40 dark:text-cream/40 text-sm mt-6">
           Already have an account?{" "}
           <Link
             href="/login"

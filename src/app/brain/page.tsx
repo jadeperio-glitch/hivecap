@@ -3,6 +3,8 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { HiveCapLogo } from "@/components/HiveCapLogo";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 interface Message {
   role: "user" | "assistant";
@@ -15,7 +17,7 @@ function TypingIndicator() {
       <div className="w-8 h-8 rounded-full bg-gold/20 border border-gold/40 flex items-center justify-center flex-shrink-0">
         <span className="text-sm">🐝</span>
       </div>
-      <div className="bg-[#1c1c1c] border border-gold/15 rounded-2xl rounded-bl-sm px-4 py-3">
+      <div className="bg-[#EDE9E1] dark:bg-[#1c1c1c] border border-gold/15 rounded-2xl rounded-bl-sm px-4 py-3">
         <div className="flex gap-1.5 items-center h-5">
           <span className="w-2 h-2 bg-gold/60 rounded-full animate-bounce [animation-delay:0ms]" />
           <span className="w-2 h-2 bg-gold/60 rounded-full animate-bounce [animation-delay:150ms]" />
@@ -46,8 +48,8 @@ function MessageBubble({ message }: { message: Message }) {
       <div className="w-8 h-8 rounded-full bg-gold/20 border border-gold/40 flex items-center justify-center flex-shrink-0">
         <span className="text-sm">🐝</span>
       </div>
-      <div className="max-w-[75%] bg-[#1c1c1c] border border-gold/15 rounded-2xl rounded-bl-sm px-4 py-3 shadow-md">
-        <p className="text-sm leading-relaxed text-cream/90 whitespace-pre-wrap">
+      <div className="max-w-[75%] bg-[#EDE9E1] dark:bg-[#1c1c1c] border border-gold/15 rounded-2xl rounded-bl-sm px-4 py-3 shadow-md">
+        <p className="text-sm leading-relaxed text-charcoal/90 dark:text-cream/90 whitespace-pre-wrap">
           {message.content}
         </p>
       </div>
@@ -193,45 +195,46 @@ export default function BrainPage() {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-charcoal">
+    <div className="flex flex-col h-screen bg-cream dark:bg-charcoal">
       {/* Header */}
-      <header className="flex-shrink-0 border-b border-gold/20 bg-[#0a0a0a] px-4 md:px-6 py-4">
+      <header className="flex-shrink-0 border-b border-gold/20 bg-white dark:bg-[#0a0a0a] px-4 md:px-6 py-4">
         <div className="max-w-4xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-full bg-gold/15 border border-gold/40 flex items-center justify-center">
-              <span className="text-lg">🐝</span>
-            </div>
+            <HiveCapLogo size="sm" markOnly />
             <div>
-              <h1 className="font-playfair text-lg font-bold text-cream leading-none">
+              <h1 className="font-playfair text-lg font-bold text-charcoal dark:text-cream leading-none">
                 HiveCap Brain
               </h1>
               {userEmail && (
-                <p className="text-cream/35 text-xs mt-0.5 truncate max-w-[200px]">
+                <p className="text-charcoal/35 dark:text-cream/35 text-xs mt-0.5 truncate max-w-[200px]">
                   {userEmail}
                 </p>
               )}
             </div>
           </div>
 
-          <button
-            onClick={handleLogout}
-            className="flex items-center gap-1.5 text-cream/50 hover:text-cream/80 text-sm font-medium border border-cream/10 hover:border-cream/20 rounded-lg px-3 py-2 transition-all duration-200"
-          >
-            <svg
-              className="w-4 h-4"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
+          <div className="flex items-center gap-2">
+            <ThemeToggle />
+            <button
+              onClick={handleLogout}
+              className="flex items-center gap-1.5 text-charcoal/50 hover:text-charcoal/80 dark:text-cream/50 dark:hover:text-cream/80 text-sm font-medium border border-charcoal/10 hover:border-charcoal/20 dark:border-cream/10 dark:hover:border-cream/20 rounded-lg px-3 py-2 transition-all duration-200"
             >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={1.5}
-                d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
-              />
-            </svg>
-            Sign out
-          </button>
+              <svg
+                className="w-4 h-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={1.5}
+                  d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
+                />
+              </svg>
+              Sign out
+            </button>
+          </div>
         </div>
       </header>
 
@@ -254,9 +257,9 @@ export default function BrainPage() {
       </div>
 
       {/* Input Area */}
-      <div className="flex-shrink-0 border-t border-gold/15 bg-[#0d0d0d] px-4 md:px-6 py-4">
+      <div className="flex-shrink-0 border-t border-gold/15 bg-[#EDE9E1] dark:bg-[#0d0d0d] px-4 md:px-6 py-4">
         <div className="max-w-4xl mx-auto">
-          <div className="flex items-end gap-3 bg-[#1a1a1a] border border-gold/20 rounded-2xl px-4 py-3 focus-within:border-gold/50 transition-colors duration-200 shadow-lg">
+          <div className="flex items-end gap-3 bg-white dark:bg-[#1a1a1a] border border-gold/20 rounded-2xl px-4 py-3 focus-within:border-gold/50 transition-colors duration-200 shadow-lg">
             <textarea
               ref={textareaRef}
               value={input}
@@ -265,7 +268,7 @@ export default function BrainPage() {
               placeholder="Ask about a race, horse, or wagering strategy…"
               rows={1}
               disabled={isLoading}
-              className="flex-1 bg-transparent text-cream placeholder:text-cream/25 text-sm resize-none leading-relaxed outline-none disabled:opacity-50 max-h-40 py-0.5"
+              className="flex-1 bg-transparent text-charcoal dark:text-cream placeholder:text-charcoal/25 dark:placeholder:text-cream/25 text-sm resize-none leading-relaxed outline-none disabled:opacity-50 max-h-40 py-0.5"
             />
             <button
               onClick={sendMessage}
@@ -287,7 +290,7 @@ export default function BrainPage() {
               </svg>
             </button>
           </div>
-          <p className="text-cream/20 text-xs text-center mt-2">
+          <p className="text-charcoal/20 dark:text-cream/20 text-xs text-center mt-2">
             Press Enter to send · Shift+Enter for new line
           </p>
         </div>
