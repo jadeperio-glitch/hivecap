@@ -31,13 +31,24 @@ function timeAgo(iso: string): string {
   return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
+const PREVIEW_LEN = 100;
+
 function PostCard({ post }: { post: Post }) {
+  const [expanded, setExpanded] = useState(false);
+  const displayName = post.username ?? post.user_email;
+  const isLong = post.content.length > PREVIEW_LEN;
+  const preview = isLong ? post.content.slice(0, PREVIEW_LEN).trimEnd() + "…" : post.content;
+
   return (
-    <article className="bg-white dark:bg-[#111] border border-gold/15 rounded-2xl px-5 py-4 shadow-sm">
+    <article
+      className="bg-white dark:bg-[#111] border border-gold/15 rounded-2xl px-5 py-4 shadow-sm cursor-pointer hover:border-gold/30 transition-colors duration-150"
+      onClick={() => isLong && setExpanded((v) => !v)}
+    >
+      {/* Meta row */}
       <div className="flex items-center justify-between mb-2 gap-2">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="text-xs font-medium text-charcoal/50 dark:text-cream/50 truncate">
-            {post.username ?? post.user_email}
+          <span className="text-xs font-semibold text-charcoal/70 dark:text-cream/70 truncate">
+            {displayName}
           </span>
           {post.brain_verified && (
             <span className="inline-flex items-center gap-1 bg-gold/15 border border-gold/30 text-gold rounded-full px-2 py-0.5 text-xs font-medium flex-shrink-0">
@@ -45,12 +56,24 @@ function PostCard({ post }: { post: Post }) {
             </span>
           )}
         </div>
-        <span className="text-xs text-charcoal/30 dark:text-cream/30 flex-shrink-0">
-          {timeAgo(post.created_at)}
-        </span>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <span className="text-xs text-charcoal/30 dark:text-cream/30">
+            {timeAgo(post.created_at)}
+          </span>
+          {isLong && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }}
+              className="text-xs text-gold/70 hover:text-gold font-medium transition-colors"
+            >
+              {expanded ? "Collapse" : "Expand"}
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* Content */}
       <p className="text-sm text-charcoal/90 dark:text-cream/90 leading-relaxed whitespace-pre-wrap">
-        {post.content}
+        {expanded ? post.content : preview}
       </p>
     </article>
   );
@@ -62,6 +85,7 @@ export default function FeedPage() {
   const [posts, setPosts] = useState<Post[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [isLoadingPosts, setIsLoadingPosts] = useState(true);
+  const [searchQuery, setSearchQuery] = useState("");
 
   // Compose state
   const [content, setContent] = useState("");
@@ -142,6 +166,16 @@ export default function FeedPage() {
     router.refresh();
   }
 
+  // Client-side filter — no server call
+  const query = searchQuery.trim().toLowerCase();
+  const filteredPosts = query
+    ? posts.filter(
+        (p) =>
+          p.content.toLowerCase().includes(query) ||
+          (p.username ?? p.user_email).toLowerCase().includes(query)
+      )
+    : posts;
+
   return (
     <div className="flex flex-col min-h-screen bg-cream dark:bg-charcoal">
       {/* Header */}
@@ -182,7 +216,7 @@ export default function FeedPage() {
       </header>
 
       <main className="flex-1 px-4 md:px-6 py-6">
-        <div className="max-w-2xl mx-auto space-y-6">
+        <div className="max-w-2xl mx-auto space-y-4">
 
           {/* Compose box */}
           <form
@@ -249,6 +283,35 @@ export default function FeedPage() {
             )}
           </form>
 
+          {/* Search bar */}
+          <div className="relative">
+            <svg
+              className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-charcoal/30 dark:text-cream/30 pointer-events-none"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M21 21l-4.35-4.35M17 11A6 6 0 115 11a6 6 0 0112 0z" />
+            </svg>
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search posts…"
+              className="w-full bg-white dark:bg-[#111] border border-gold/15 rounded-xl pl-9 pr-9 py-2.5 text-sm text-charcoal dark:text-cream placeholder:text-charcoal/30 dark:placeholder:text-cream/30 focus:border-gold/40 focus:outline-none transition-colors"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery("")}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-charcoal/30 hover:text-charcoal/60 dark:text-cream/30 dark:hover:text-cream/60 transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            )}
+          </div>
+
           {/* Posts */}
           {isLoadingPosts ? (
             <div className="flex items-center justify-center py-12 text-charcoal/30 dark:text-cream/30 text-sm">
@@ -259,9 +322,24 @@ export default function FeedPage() {
               <p className="text-charcoal/40 dark:text-cream/40 text-sm">No posts yet.</p>
               <p className="text-charcoal/25 dark:text-cream/25 text-xs mt-1">Be the first to share a pick.</p>
             </div>
+          ) : filteredPosts.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12 text-center">
+              <p className="text-charcoal/40 dark:text-cream/40 text-sm">No posts match &ldquo;{searchQuery}&rdquo;</p>
+              <button
+                onClick={() => setSearchQuery("")}
+                className="text-gold hover:text-gold/75 text-xs mt-2 transition-colors"
+              >
+                Clear search
+              </button>
+            </div>
           ) : (
             <div className="space-y-3">
-              {posts.map((post) => (
+              {query && (
+                <p className="text-xs text-charcoal/35 dark:text-cream/35 px-1">
+                  {filteredPosts.length} of {posts.length} posts
+                </p>
+              )}
+              {filteredPosts.map((post) => (
                 <PostCard key={post.id} post={post} />
               ))}
             </div>
