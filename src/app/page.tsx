@@ -1,8 +1,15 @@
 import Link from "next/link";
 import { HiveCapLogo } from "@/components/HiveCapLogo";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { createClient } from "@/lib/supabase/server";
 
-export default function HomePage() {
+export default async function HomePage() {
+  const supabase = createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  const isAuthenticated = !!user;
+
   return (
     <main className="min-h-screen bg-cream dark:bg-charcoal flex flex-col">
       {/* Header */}
@@ -11,18 +18,29 @@ export default function HomePage() {
           <HiveCapLogo size="sm" variant="dark" />
           <nav className="flex items-center gap-2">
             <ThemeToggle />
-            <Link
-              href="/login"
-              className="text-charcoal/70 hover:text-charcoal dark:text-cream/70 dark:hover:text-cream text-sm font-medium transition-colors duration-200 px-2"
-            >
-              Sign In
-            </Link>
-            <Link
-              href="/signup"
-              className="bg-gold text-charcoal px-4 py-2 rounded-md text-sm font-semibold hover:bg-gold/90 transition-colors duration-200"
-            >
-              Get Access
-            </Link>
+            {isAuthenticated ? (
+              <Link
+                href="/brain"
+                className="bg-gold text-charcoal px-4 py-2 rounded-md text-sm font-semibold hover:bg-gold/90 transition-colors duration-200"
+              >
+                Go to Brain
+              </Link>
+            ) : (
+              <>
+                <Link
+                  href="/login"
+                  className="text-charcoal/70 hover:text-charcoal dark:text-cream/70 dark:hover:text-cream text-sm font-medium transition-colors duration-200 px-2"
+                >
+                  Sign In
+                </Link>
+                <Link
+                  href="/signup"
+                  className="bg-gold text-charcoal px-4 py-2 rounded-md text-sm font-semibold hover:bg-gold/90 transition-colors duration-200"
+                >
+                  Get Access
+                </Link>
+              </>
+            )}
           </nav>
         </div>
       </header>
