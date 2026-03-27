@@ -85,6 +85,13 @@ export default function BrainPage() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [isLoadingConversation, setIsLoadingConversation] = useState(false);
 
+  // Post to Feed modal state
+  const [showFeedModal, setShowFeedModal] = useState(false);
+  const [feedDraft, setFeedDraft] = useState("");
+  const [feedPosting, setFeedPosting] = useState(false);
+  const [feedPostError, setFeedPostError] = useState<string | null>(null);
+  const [feedPostSuccess, setFeedPostSuccess] = useState(false);
+
   // Document upload state
   const [documents, setDocuments] = useState<UserDocument[]>([]);
   const [uploadStatus, setUploadStatus] = useState<UploadStatus>("idle");
@@ -323,6 +330,40 @@ export default function BrainPage() {
     }
   }
 
+  function openFeedModal() {
+    // Pre-fill with the last assistant response
+    const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
+    setFeedDraft(lastAssistant?.content ?? "");
+    setFeedPostError(null);
+    setFeedPostSuccess(false);
+    setShowFeedModal(true);
+  }
+
+  async function submitFeedPost() {
+    if (!feedDraft.trim() || feedPosting) return;
+    setFeedPosting(true);
+    setFeedPostError(null);
+    try {
+      const res = await fetch("/api/posts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: feedDraft.trim(),
+          brain_verified: true,
+          conversation_id: conversationId ?? null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setFeedPostSuccess(true);
+      setTimeout(() => setShowFeedModal(false), 1200);
+    } catch (err) {
+      setFeedPostError(err instanceof Error ? err.message : "Failed to post");
+    } finally {
+      setFeedPosting(false);
+    }
+  }
+
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -413,6 +454,19 @@ export default function BrainPage() {
                   Upload PDF
                 </>
               )}
+            </button>
+
+            {/* Post to Feed */}
+            <button
+              onClick={openFeedModal}
+              disabled={messages.filter((m) => m.role === "assistant" && m.content).length <= 1}
+              className="flex items-center gap-1.5 text-charcoal/60 hover:text-gold dark:text-cream/60 dark:hover:text-gold text-sm font-medium border border-charcoal/10 hover:border-gold/40 dark:border-cream/10 dark:hover:border-gold/40 rounded-lg px-3 py-2 transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed"
+              title="Post last Brain response to the community feed"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+              </svg>
+              Post to Feed
             </button>
 
             <button
@@ -540,6 +594,77 @@ export default function BrainPage() {
           </p>
         </div>
       </div>
+
+      {/* Post to Feed modal */}
+      {showFeedModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4"
+          onClick={(e) => { if (e.target === e.currentTarget) setShowFeedModal(false); }}
+        >
+          <div className="bg-white dark:bg-[#111] border border-gold/20 rounded-2xl shadow-2xl w-full max-w-lg p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-playfair text-base font-bold text-charcoal dark:text-cream">
+                Post to Community Feed
+              </h2>
+              <button
+                onClick={() => setShowFeedModal(false)}
+                className="text-charcoal/40 hover:text-charcoal/70 dark:text-cream/40 dark:hover:text-cream/70 transition-colors"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <textarea
+              value={feedDraft}
+              onChange={(e) => setFeedDraft(e.target.value)}
+              rows={6}
+              maxLength={2000}
+              className="w-full bg-[#F9F7F2] dark:bg-[#1a1a1a] border border-gold/15 rounded-xl px-4 py-3 text-sm text-charcoal dark:text-cream placeholder:text-charcoal/25 dark:placeholder:text-cream/25 resize-none outline-none focus:border-gold/40 transition-colors leading-relaxed"
+              placeholder="Edit before posting…"
+            />
+
+            <div className="flex items-center justify-between mt-2 mb-4">
+              <span className="inline-flex items-center gap-1 bg-gold/15 border border-gold/30 text-gold rounded-full px-2.5 py-0.5 text-xs font-medium">
+                🐝 Brain-verified
+              </span>
+              <span className={`text-xs ${feedDraft.length > 1800 ? "text-red-400" : "text-charcoal/30 dark:text-cream/30"}`}>
+                {feedDraft.length}/2000
+              </span>
+            </div>
+
+            {feedPostError && (
+              <p className="text-red-500 text-xs mb-3">{feedPostError}</p>
+            )}
+
+            {feedPostSuccess ? (
+              <div className="flex items-center justify-center gap-2 py-2 text-green-500 text-sm font-medium">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+                Posted to feed!
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 justify-end">
+                <button
+                  onClick={() => setShowFeedModal(false)}
+                  className="text-sm text-charcoal/50 hover:text-charcoal/80 dark:text-cream/50 dark:hover:text-cream/80 px-4 py-2 rounded-lg border border-charcoal/10 dark:border-cream/10 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={submitFeedPost}
+                  disabled={!feedDraft.trim() || feedPosting || feedDraft.length > 2000}
+                  className="bg-gold text-charcoal text-sm font-semibold px-5 py-2 rounded-lg hover:bg-gold/85 disabled:opacity-40 disabled:cursor-not-allowed transition-all duration-200 shadow-sm shadow-gold/20"
+                >
+                  {feedPosting ? "Posting…" : "Post"}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -33,9 +33,10 @@ export async function middleware(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  // Protect /brain route — API routes handle their own auth, never redirect them
+  // Protect /brain and /feed — API routes handle their own auth, never redirect them
   if (
-    request.nextUrl.pathname.startsWith("/brain") &&
+    (request.nextUrl.pathname.startsWith("/brain") ||
+      request.nextUrl.pathname.startsWith("/feed")) &&
     !request.nextUrl.pathname.startsWith("/api/") &&
     !user
   ) {
