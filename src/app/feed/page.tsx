@@ -9,6 +9,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 interface Post {
   id: string;
   user_email: string;
+  username: string | null;
   content: string;
   brain_verified: boolean;
   project_id: string | null;
@@ -36,7 +37,7 @@ function PostCard({ post }: { post: Post }) {
       <div className="flex items-center justify-between mb-2 gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-xs font-medium text-charcoal/50 dark:text-cream/50 truncate">
-            {post.user_email}
+            {post.username ?? post.user_email}
           </span>
           {post.brain_verified && (
             <span className="inline-flex items-center gap-1 bg-gold/15 border border-gold/30 text-gold rounded-full px-2 py-0.5 text-xs font-medium flex-shrink-0">

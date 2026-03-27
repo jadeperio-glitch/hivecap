@@ -12,6 +12,7 @@ const VALID_INVITE_CODE = "maxplayer";
 export default function SignupPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [inviteCode, setInviteCode] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -27,18 +28,21 @@ export default function SignupPage() {
       return;
     }
 
-    setLoading(true);
-
-    // Double-check invite code before creating account
-    if (inviteCode.trim().toLowerCase() !== VALID_INVITE_CODE) {
-      setError("Invalid invite code");
-      setLoading(false);
+    const trimmedUsername = username.trim();
+    if (!trimmedUsername) {
+      setError("Username is required");
+      return;
+    }
+    if (!/^[a-zA-Z0-9_]{3,20}$/.test(trimmedUsername)) {
+      setError("Username must be 3–20 characters and contain only letters, numbers, or underscores");
       return;
     }
 
+    setLoading(true);
+
     const supabase = createClient();
 
-    const { error: signUpError } = await supabase.auth.signUp({
+    const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
       email,
       password,
       options: {
@@ -62,6 +66,26 @@ export default function SignupPage() {
       // Account created but couldn't auto sign in — redirect to login
       router.push("/login?message=Account created. Please sign in.");
       return;
+    }
+
+    // Save profile (username) — user is now authenticated so RLS allows this
+    const userId = signUpData.user?.id;
+    if (userId) {
+      const { error: profileError } = await supabase
+        .from("profiles")
+        .insert({ id: userId, username: trimmedUsername });
+
+      if (profileError) {
+        // Username conflict or other DB error — surface it without blocking login
+        if (profileError.message.includes("unique") || profileError.code === "23505") {
+          setError("That username is already taken. Please choose another.");
+          // Sign out so they can try again cleanly
+          await supabase.auth.signOut();
+          setLoading(false);
+          return;
+        }
+        console.error("[signup] profile insert error:", profileError.message);
+      }
     }
 
     router.push("/brain");
@@ -107,6 +131,28 @@ export default function SignupPage() {
               placeholder="you@example.com"
               className="w-full bg-cream dark:bg-charcoal border border-gold/20 rounded-lg px-4 py-3 text-charcoal dark:text-cream placeholder:text-charcoal/25 dark:placeholder:text-cream/25 text-sm focus:border-gold/60 focus:ring-1 focus:ring-gold/30 transition-colors duration-200 outline-none"
             />
+          </div>
+
+          {/* Username */}
+          <div>
+            <label
+              htmlFor="username"
+              className="block text-xs font-semibold text-charcoal/60 dark:text-cream/60 uppercase tracking-wider mb-2"
+            >
+              Username
+            </label>
+            <input
+              id="username"
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              required
+              placeholder="e.g. handicapper42"
+              className="w-full bg-cream dark:bg-charcoal border border-gold/20 rounded-lg px-4 py-3 text-charcoal dark:text-cream placeholder:text-charcoal/25 dark:placeholder:text-cream/25 text-sm focus:border-gold/60 focus:ring-1 focus:ring-gold/30 transition-colors duration-200 outline-none"
+            />
+            <p className="text-charcoal/35 dark:text-cream/35 text-xs mt-1.5">
+              Letters, numbers, underscores · 3–20 characters
+            </p>
           </div>
 
           {/* Password */}
