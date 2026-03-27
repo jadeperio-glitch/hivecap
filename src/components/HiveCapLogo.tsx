@@ -26,7 +26,10 @@ export function HiveCapLogo({
   // "HIVE" text inherits currentColor by default; variant provides an explicit
   // override when the logo is rendered on a surface with known fixed color.
   const hiveColor =
-    variant === 'light' ? '#F5F2EC' : variant === 'dark' ? '#0F0F0F' : 'inherit';
+    variant === 'light' ? '#F5F2EC' : variant === 'dark' ? '#FFFFFF' : 'inherit';
+  const capColor =
+    variant === 'dark' ? '#F5C800' : '#E8A800';
+  const beeStroke = variant === 'dark' ? { stroke: '#FFFFFF', strokeWidth: 1.5 } : {};
 
   const beeSvg = (
     <svg
@@ -51,7 +54,7 @@ export function HiveCapLogo({
       />
 
       {/* ── Body ── */}
-      <ellipse cx="25" cy="48" rx="14" ry="17" fill="#E8A800" />
+      <ellipse cx="25" cy="48" rx="14" ry="17" fill="#E8A800" {...beeStroke} />
 
       {/* ── Black stripes clipped to body ── */}
       <defs>
@@ -64,7 +67,7 @@ export function HiveCapLogo({
       <rect x="11" y="53"   width="28" height="3.5" fill="#100F0A" fillOpacity="0.62" clipPath={`url(#${clipId})`} />
 
       {/* ── Head ── */}
-      <circle cx="25" cy="25" r="12" fill="#F0B800" />
+      <circle cx="25" cy="25" r="12" fill="#F0B800" {...beeStroke} />
 
       {/* ── Crown (3-pointed, white) ── */}
       <path d="M17,18 L18.5,9 L22,14 L25,6 L28,14 L31.5,9 L33,18 Z" fill="white" />
@@ -115,7 +118,7 @@ export function HiveCapLogo({
         }}
       >
         <span style={{ color: hiveColor }}>HIVE</span>
-        <span style={{ color: '#E8A800' }}>CAP</span>
+        <span style={{ color: capColor }}>CAP</span>
       </span>
     </div>
   );
