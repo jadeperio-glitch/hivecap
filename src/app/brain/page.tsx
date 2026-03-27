@@ -251,25 +251,6 @@ export default function BrainPage() {
       textareaRef.current.style.height = "auto";
     }
 
-    // Ensure a conversation exists before sending
-    let activeConvId = conversationId;
-    if (!activeConvId) {
-      try {
-        const supabase = createClient();
-        const { data: conv } = await supabase
-          .from("conversations")
-          .insert({ title: trimmed.slice(0, 60) })
-          .select("id")
-          .single();
-        if (conv) {
-          activeConvId = conv.id;
-          setConversationId(conv.id);
-        }
-      } catch (err) {
-        console.warn("[brain] Could not create conversation:", err);
-      }
-    }
-
     try {
       const response = await fetch("/api/brain", {
         method: "POST",
@@ -279,7 +260,8 @@ export default function BrainPage() {
             role: m.role,
             content: m.content,
           })),
-          conversation_id: activeConvId ?? undefined,
+          // Pass existing conversation_id if we have one; server creates one if not
+          conversation_id: conversationId ?? undefined,
           user_message: trimmed,
         }),
       });
@@ -291,6 +273,13 @@ export default function BrainPage() {
 
       if (!response.body) {
         throw new Error("No response body");
+      }
+
+      // Server creates a conversation if none existed — store the id for subsequent messages
+      const convIdFromHeader = response.headers.get("X-Conversation-Id");
+      if (convIdFromHeader) {
+        console.log("[brain] conversation_id from server:", convIdFromHeader);
+        setConversationId(convIdFromHeader);
       }
 
       const reader = response.body.getReader();

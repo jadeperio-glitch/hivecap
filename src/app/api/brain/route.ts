@@ -35,7 +35,7 @@ export async function POST(request: Request) {
       });
     }
 
-    // ── Fetch user + documents ─────────────────────────────────────────────────
+    // ── Auth + documents ───────────────────────────────────────────────────────
     // Gracefully degrades — if auth fails, Brain still works without doc context.
     let documentContext = "";
     let userId: string | null = null;
@@ -44,41 +44,73 @@ export async function POST(request: Request) {
       const supabase = createClient();
       const {
         data: { user },
+        error: authErr,
       } = await supabase.auth.getUser();
 
-      if (user) {
+      if (authErr) {
+        console.error("[brain] auth.getUser error:", authErr.message);
+      } else if (user) {
         userId = user.id;
+        console.log("[brain] authenticated user:", userId);
 
-        const { data: docs } = await supabase
+        const { data: docs, error: docsErr } = await supabase
           .from("user_documents")
           .select("filename, extracted_text")
           .eq("user_id", user.id)
           .order("created_at", { ascending: false });
 
-        if (docs && docs.length > 0) {
+        if (docsErr) {
+          console.error("[brain] user_documents query error:", docsErr.message);
+        } else if (docs && docs.length > 0) {
           documentContext = docs
             .map((d) => `--- Document: ${d.filename} ---\n${d.extracted_text}`)
             .join("\n\n");
         }
+      } else {
+        console.warn("[brain] No authenticated user — persistence disabled");
       }
     } catch (err) {
-      // Non-fatal — continue without documents or persistence
-      console.warn("[brain] Could not fetch user documents:", err);
+      console.warn("[brain] Auth/docs setup threw:", err);
     }
 
-    // ── Save user message (fire-and-forget, non-fatal) ─────────────────────────
-    if (userId && conversation_id && user_message) {
+    // ── Resolve conversation (server creates if client didn't supply one) ───────
+    let activeConvId: string | null = conversation_id ?? null;
+
+    if (userId) {
+      if (activeConvId) {
+        console.log("[brain] Using existing conversation:", activeConvId);
+      } else {
+        const supabase = createClient();
+        const title = user_message ? user_message.slice(0, 60) : "New conversation";
+        const { data: conv, error: convErr } = await supabase
+          .from("conversations")
+          .insert({ user_id: userId, title })
+          .select("id")
+          .single();
+
+        if (convErr) {
+          console.error("[brain] Failed to create conversation:", convErr.message, convErr);
+        } else {
+          activeConvId = conv.id;
+          console.log("[brain] Created new conversation:", activeConvId);
+        }
+      }
+    }
+
+    // ── Save user message (fire-and-forget) ────────────────────────────────────
+    if (userId && activeConvId && user_message) {
       const supabase = createClient();
       supabase
         .from("messages")
         .insert({
-          conversation_id,
+          conversation_id: activeConvId,
           user_id: userId,
           role: "user",
           content: user_message,
         })
         .then(({ error }) => {
           if (error) console.error("[brain] Failed to save user message:", error.message);
+          else console.log("[brain] Saved user message to conversation:", activeConvId);
         });
     }
 
@@ -117,9 +149,9 @@ export async function POST(request: Request) {
       messages: anthropicMessages,
     });
 
-    // Capture for use inside the ReadableStream closure
+    // Capture for closure
     const capturedUserId = userId;
-    const capturedConvId = conversation_id;
+    const capturedConvId = activeConvId;
 
     const readableStream = new ReadableStream({
       async start(controller) {
@@ -144,7 +176,7 @@ export async function POST(request: Request) {
         if (capturedUserId && capturedConvId && fullText) {
           try {
             const supabase = createClient();
-            await Promise.all([
+            const [msgResult, convResult] = await Promise.all([
               supabase.from("messages").insert({
                 conversation_id: capturedConvId,
                 user_id: capturedUserId,
@@ -156,8 +188,14 @@ export async function POST(request: Request) {
                 .update({ updated_at: new Date().toISOString() })
                 .eq("id", capturedConvId),
             ]);
+            if (msgResult.error)
+              console.error("[brain] Failed to save assistant message:", msgResult.error.message);
+            if (convResult.error)
+              console.error("[brain] Failed to update conversation timestamp:", convResult.error.message);
+            else
+              console.log("[brain] Persisted assistant message to conversation:", capturedConvId);
           } catch (err) {
-            console.error("[brain] Failed to persist assistant message:", err);
+            console.error("[brain] Post-stream persist threw:", err);
           }
         }
       },
@@ -168,6 +206,8 @@ export async function POST(request: Request) {
         "Content-Type": "text/plain; charset=utf-8",
         "Transfer-Encoding": "chunked",
         "X-Content-Type-Options": "nosniff",
+        // Send the resolved conversation_id back so the client can store it
+        ...(activeConvId ? { "X-Conversation-Id": activeConvId } : {}),
       },
     });
   } catch (error) {
