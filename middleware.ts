@@ -33,8 +33,12 @@ export async function middleware(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  // Protect /brain route
-  if (request.nextUrl.pathname.startsWith("/brain") && !user) {
+  // Protect /brain route — API routes handle their own auth, never redirect them
+  if (
+    request.nextUrl.pathname.startsWith("/brain") &&
+    !request.nextUrl.pathname.startsWith("/api/") &&
+    !user
+  ) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     return NextResponse.redirect(url);
