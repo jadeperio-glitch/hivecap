@@ -1,7 +1,3 @@
-import * as pdfParseModule from "pdf-parse";
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const pdfParse: (buf: Buffer) => Promise<{ text: string }> =
-  (pdfParseModule as any).default ?? pdfParseModule;
 import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -60,11 +56,15 @@ export async function POST(request: Request) {
     }
 
     // ── Extract text ───────────────────────────────────────────────────────────
+    // Import the internal lib path to avoid the debug/test code in index.js.
+    // Dynamic import keeps it inside this try-catch so load errors return JSON.
     let extractedText: string;
     try {
       const buffer = Buffer.from(await file.arrayBuffer());
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const pdfParse = require("pdf-parse/lib/pdf-parse.js");
       const parsed = await pdfParse(buffer);
-      extractedText = parsed.text.trim();
+      extractedText = (parsed.text as string).trim();
     } catch (parseErr) {
       console.error("[upload] pdf-parse error:", parseErr);
       return json({ error: "Could not extract text from PDF" }, 422);
@@ -92,7 +92,6 @@ export async function POST(request: Request) {
 
     return json({ success: true, filename: file.name });
   } catch (err) {
-    // Catch-all: ensure we never return an HTML error page
     console.error("[upload] Unhandled error:", err);
     const message = err instanceof Error ? err.message : "Internal server error";
     return new Response(JSON.stringify({ error: message }), {
