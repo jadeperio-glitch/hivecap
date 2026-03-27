@@ -18,6 +18,12 @@ export default async function HomePage() {
           <HiveCapLogo size="sm" variant="dark" />
           <nav className="flex items-center gap-2">
             <ThemeToggle />
+            <Link
+              href="/feed"
+              className="text-charcoal/70 hover:text-charcoal dark:text-cream/70 dark:hover:text-cream text-sm font-medium transition-colors duration-200 px-2"
+            >
+              Community Feed
+            </Link>
             {isAuthenticated ? (
               <Link
                 href="/brain"

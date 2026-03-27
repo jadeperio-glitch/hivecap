@@ -456,6 +456,14 @@ export default function BrainPage() {
               )}
             </button>
 
+            {/* Community Feed link */}
+            <a
+              href="/feed"
+              className="flex items-center gap-1.5 text-charcoal/60 hover:text-gold dark:text-cream/60 dark:hover:text-gold text-sm font-medium border border-charcoal/10 hover:border-gold/40 dark:border-cream/10 dark:hover:border-gold/40 rounded-lg px-3 py-2 transition-all duration-200"
+            >
+              Community Feed
+            </a>
+
             {/* Post to Feed */}
             <button
               onClick={openFeedModal}
