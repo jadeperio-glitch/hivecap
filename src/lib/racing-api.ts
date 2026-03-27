@@ -54,34 +54,82 @@ async function racingFetch<T>(
 
 export interface Runner {
   horse_id: string;
-  horse: string;          // horse name
+  horse: string;            // horse name
+  number: number;           // cloth / saddlecloth number
+  position: string;         // finishing position, or "F" / "U" / "R" etc.
+  draw: number | null;      // stall draw (null on jumps / where N/A)
+  btn: string | null;       // beaten distance from winner
+  ovr_btn: string | null;   // overall beaten distance (cumulative)
+  age: string;
+  sex: string;              // "G" gelding, "M" mare, "C" colt, etc.
+  weight: string;           // carried weight in stones-lbs e.g. "9-2"
+  weight_lbs: number;       // carried weight in lbs
+  headgear: string | null;  // e.g. "b" blinkers, "v" visor, null if none
+  time: string | null;      // finishing time (winner only, others null)
+  sp: string;               // starting price as fraction e.g. "5/1"
+  sp_dec: number;           // starting price as decimal e.g. 6.0
+  bsp: number | null;       // Betfair SP
+  or: number | null;        // Official Rating
+  rpr: number | null;       // Racing Post Rating
+  tsr: number | null;       // Top Speed Rating
+  prize: string | null;     // prize money earned
   jockey: string;
+  jockey_id: string;
+  jockey_claim_lbs: number; // weight allowance claimed (0 if none)
   trainer: string;
-  number: number;         // cloth/saddlecloth number
-  draw?: number;          // stall draw
-  age?: string;
-  weight?: string;        // carried weight e.g. "9-2"
-  sp?: string;            // starting price e.g. "5/1"
-  position?: string | number; // finishing position or "F", "U", etc.
-  official_position?: string;
+  trainer_id: string;
+  owner: string;
+  owner_id: string;
+  sire: string;
+  sire_id: string;
+  dam: string;
+  dam_id: string;
+  damsire: string;
+  damsire_id: string;
+  comment: string | null;   // race-day comment / notes
+  silk_url: string | null;  // URL to jockey silk image
 }
 
 export interface Race {
   race_id: string;
-  course: string;
-  date: string;           // YYYY-MM-DD
-  off_time: string;       // scheduled off time e.g. "14:30"
-  name: string;           // race title
-  distance: string;       // e.g. "1m 2f"
-  going?: string;         // going description e.g. "Good to Firm"
-  class?: string;         // race class / grade
-  prize?: string;         // total prize fund
+  date: string;             // YYYY-MM-DD
+  region: string;           // e.g. "usa", "gb", "ire"
+  course: string;           // course name
+  course_id: string;
+  off: string;              // scheduled off time e.g. "14:30"
+  off_dt: string;           // ISO datetime of off time
+  race_name: string;        // full race title
+  type: string;             // "Flat" | "Hurdle" | "Chase" | "NH Flat" etc.
+  class: string | null;     // race class / grade
+  pattern: string | null;   // "Group 1" / "Listed" / "Grade 1" etc.
+  rating_band: string | null; // e.g. "0-85"
+  age_band: string | null;  // e.g. "3yo+"
+  sex_rest: string | null;  // sex restriction e.g. "C&G"
+  dist: string;             // distance in "Xm Xf" format
+  dist_y: number;           // distance in yards
+  dist_m: number;           // distance in metres
+  dist_f: number;           // distance in furlongs (decimal)
+  going: string;            // going description e.g. "Good to Firm"
+  surface: string;          // "Turf" | "Dirt" | "Synthetic"
+  jumps: string | null;     // hurdle / fence details (jumps races)
   runners: Runner[];
+  non_runners: string[];    // list of non-runner horse names
+  winning_time_detail: string | null;
+  comments: string | null;  // race-level stewards / race comments
+  tote_win: string | null;
+  tote_pl: string | null;
+  tote_ex: string | null;
+  tote_csf: string | null;
+  tote_tricast: string | null;
+  tote_trifecta: string | null;
 }
 
 export interface ResultsResponse {
   results: Race[];
-  total?: number;
+  total: number;   // total results matching the query
+  limit: number;   // page size
+  skip: number;    // pagination offset
+  query: Record<string, string>; // echo of the query params sent
 }
 
 export interface RacecardResponse {
