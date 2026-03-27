@@ -456,6 +456,14 @@ export default function BrainPage() {
               )}
             </button>
 
+            {/* Settings link */}
+            <a
+              href="/settings"
+              className="flex items-center gap-1.5 text-charcoal/60 hover:text-gold dark:text-cream/60 dark:hover:text-gold text-sm font-medium border border-charcoal/10 hover:border-gold/40 dark:border-cream/10 dark:hover:border-gold/40 rounded-lg px-3 py-2 transition-all duration-200"
+            >
+              Settings
+            </a>
+
             {/* Community Feed link */}
             <a
               href="/feed"
