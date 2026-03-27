@@ -11,6 +11,16 @@ interface Message {
   content: string;
 }
 
+interface UserDocument {
+  id: string;
+  filename: string;
+  created_at: string;
+}
+
+type UploadStatus = "idle" | "uploading" | "done" | "error";
+
+const MAX_BYTES = 10 * 1024 * 1024;
+
 function TypingIndicator() {
   return (
     <div className="flex items-end gap-3 mb-4">
@@ -70,6 +80,15 @@ export default function BrainPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState<string | null>(null);
+
+  // Document upload state
+  const [documents, setDocuments] = useState<UserDocument[]>([]);
+  const [uploadStatus, setUploadStatus] = useState<UploadStatus>("idle");
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [showDocs, setShowDocs] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -81,6 +100,15 @@ export default function BrainPage() {
     scrollToBottom();
   }, [messages, isLoading, scrollToBottom]);
 
+  const fetchDocuments = useCallback(async () => {
+    const supabase = createClient();
+    const { data } = await supabase
+      .from("user_documents")
+      .select("id, filename, created_at")
+      .order("created_at", { ascending: false });
+    if (data) setDocuments(data);
+  }, []);
+
   useEffect(() => {
     const supabase = createClient();
     supabase.auth.getUser().then(({ data: { user } }) => {
@@ -88,9 +116,69 @@ export default function BrainPage() {
         router.push("/login");
       } else {
         setUserEmail(user.email ?? null);
+        fetchDocuments();
       }
     });
-  }, [router]);
+  }, [router, fetchDocuments]);
+
+  async function handleUpload(file: File) {
+    if (file.type !== "application/pdf") {
+      setUploadStatus("error");
+      setUploadError("PDF files only");
+      return;
+    }
+    if (file.size > MAX_BYTES) {
+      setUploadStatus("error");
+      setUploadError("File exceeds 10 MB limit");
+      return;
+    }
+
+    setUploadStatus("uploading");
+    setUploadError(null);
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const res = await fetch("/api/upload", { method: "POST", body: formData });
+      const json = await res.json();
+      if (!res.ok) {
+        throw new Error(json.error || `HTTP ${res.status}`);
+      }
+      setUploadStatus("done");
+      await fetchDocuments();
+      setShowDocs(true);
+      setTimeout(() => setUploadStatus("idle"), 3000);
+    } catch (err) {
+      setUploadStatus("error");
+      setUploadError(err instanceof Error ? err.message : "Upload failed");
+    }
+  }
+
+  function handleFileInputChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (file) handleUpload(file);
+    // Reset so same file can be re-selected
+    e.target.value = "";
+  }
+
+  function handleDragOver(e: React.DragEvent) {
+    e.preventDefault();
+    setIsDragOver(true);
+  }
+
+  function handleDragLeave(e: React.DragEvent) {
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsDragOver(false);
+    }
+  }
+
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setIsDragOver(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) handleUpload(file);
+  }
 
   async function handleLogout() {
     const supabase = createClient();
@@ -111,7 +199,6 @@ export default function BrainPage() {
     setIsLoading(true);
     setError(null);
 
-    // Reset textarea height
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
@@ -137,12 +224,10 @@ export default function BrainPage() {
         throw new Error("No response body");
       }
 
-      // Stream the response
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let assistantContent = "";
 
-      // Add placeholder assistant message
       setMessages((prev) => [
         ...prev,
         { role: "assistant", content: "" },
@@ -189,13 +274,37 @@ export default function BrainPage() {
 
   function handleTextareaChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
     setInput(e.target.value);
-    // Auto-resize textarea
     e.target.style.height = "auto";
     e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
   }
 
+  const showDocPanel = documents.length > 0 || uploadStatus === "error";
+
   return (
-    <div className="flex flex-col h-screen bg-cream dark:bg-charcoal">
+    <div
+      className={`flex flex-col h-screen bg-cream dark:bg-charcoal transition-colors duration-200 ${isDragOver ? "ring-2 ring-inset ring-gold/50" : ""}`}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {/* Drag overlay hint */}
+      {isDragOver && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-charcoal/40 dark:bg-black/50 pointer-events-none">
+          <div className="bg-white dark:bg-[#1a1a1a] border-2 border-dashed border-gold rounded-2xl px-8 py-6 text-center">
+            <p className="text-gold font-medium text-lg">Drop PDF to upload</p>
+          </div>
+        </div>
+      )}
+
+      {/* Hidden file input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="application/pdf"
+        className="hidden"
+        onChange={handleFileInputChange}
+      />
+
       {/* Header */}
       <header className="flex-shrink-0 border-b border-gold/20 bg-white dark:bg-[#0a0a0a] px-4 md:px-6 py-4">
         <div className="max-w-4xl mx-auto flex items-center justify-between">
@@ -215,6 +324,39 @@ export default function BrainPage() {
 
           <div className="flex items-center gap-2">
             <ThemeToggle />
+
+            {/* Upload button */}
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploadStatus === "uploading"}
+              className="flex items-center gap-1.5 text-charcoal/60 hover:text-gold dark:text-cream/60 dark:hover:text-gold text-sm font-medium border border-charcoal/10 hover:border-gold/40 dark:border-cream/10 dark:hover:border-gold/40 rounded-lg px-3 py-2 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Upload PDF to Brain"
+            >
+              {uploadStatus === "uploading" ? (
+                <>
+                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
+                  </svg>
+                  Uploading…
+                </>
+              ) : uploadStatus === "done" ? (
+                <>
+                  <svg className="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  Uploaded
+                </>
+              ) : (
+                <>
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M12 12V4m0 0L8 8m4-4l4 4" />
+                  </svg>
+                  Upload PDF
+                </>
+              )}
+            </button>
+
             <button
               onClick={handleLogout}
               className="flex items-center gap-1.5 text-charcoal/50 hover:text-charcoal/80 dark:text-cream/50 dark:hover:text-cream/80 text-sm font-medium border border-charcoal/10 hover:border-charcoal/20 dark:border-cream/10 dark:hover:border-cream/20 rounded-lg px-3 py-2 transition-all duration-200"
@@ -237,6 +379,51 @@ export default function BrainPage() {
           </div>
         </div>
       </header>
+
+      {/* Document panel */}
+      {showDocPanel && (
+        <div className="flex-shrink-0 border-b border-gold/15 bg-[#F9F7F2] dark:bg-[#0f0f0f] px-4 md:px-6 py-2">
+          <div className="max-w-4xl mx-auto">
+            {uploadStatus === "error" && uploadError && (
+              <p className="text-red-500 text-xs mb-1">{uploadError}</p>
+            )}
+            {documents.length > 0 && (
+              <button
+                onClick={() => setShowDocs((v) => !v)}
+                className="flex items-center gap-1.5 text-charcoal/50 dark:text-cream/50 hover:text-gold dark:hover:text-gold text-xs font-medium transition-colors duration-150"
+              >
+                <svg className="w-3.5 h-3.5 text-gold/70" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                {documents.length} doc{documents.length !== 1 ? "s" : ""} in Brain
+                <svg
+                  className={`w-3 h-3 transition-transform duration-200 ${showDocs ? "rotate-180" : ""}`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+            )}
+            {showDocs && documents.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                {documents.map((doc) => (
+                  <span
+                    key={doc.id}
+                    className="inline-flex items-center gap-1 bg-gold/10 border border-gold/20 text-charcoal/70 dark:text-cream/70 rounded-full px-2.5 py-0.5 text-xs"
+                  >
+                    <svg className="w-3 h-3 text-gold/60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                    </svg>
+                    {doc.filename}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 md:px-6 py-6">

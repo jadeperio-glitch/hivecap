@@ -1,10 +1,11 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { createClient } from "@/lib/supabase/server";
 
 const client = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-const SYSTEM_PROMPT = `You are the HiveCap Brain — an expert horse racing analyst. You specialize in:
+const BASE_PROMPT = `You are the HiveCap Brain — an expert horse racing analyst. You specialize in:
 - Beyer Speed Figures and pace analysis
 - Pedigree research and trip notes
 - Wagering strategy (exactas, trifectas, Pick 4/5/6)
@@ -12,6 +13,9 @@ const SYSTEM_PROMPT = `You are the HiveCap Brain — an expert horse racing anal
 - Track bias, trainer patterns, and jockey statistics
 
 You synthesize and analyze information from your training data. You never reproduce copyrighted content verbatim — you always analyze, summarize, and provide original insights. You are precise, confident, and data-driven. When discussing horses, lead with the most analytically relevant factors.`;
+
+const DOCUMENT_INSTRUCTION =
+  "You have access to documents uploaded by the user. Extract and reason from the data within them but never reproduce source text verbatim. All answers must be derivative analysis only.";
 
 export const runtime = "nodejs";
 
@@ -29,7 +33,39 @@ export async function POST(request: Request) {
       });
     }
 
-    // Filter to valid Anthropic message format
+    // ── Fetch user documents ───────────────────────────────────────────────────
+    // Gracefully degrades — if auth fails, Brain still works without doc context.
+    let documentContext = "";
+    try {
+      const supabase = createClient();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (user) {
+        const { data: docs } = await supabase
+          .from("user_documents")
+          .select("filename, extracted_text")
+          .eq("user_id", user.id)
+          .order("created_at", { ascending: false });
+
+        if (docs && docs.length > 0) {
+          documentContext = docs
+            .map((d) => `--- Document: ${d.filename} ---\n${d.extracted_text}`)
+            .join("\n\n");
+        }
+      }
+    } catch (err) {
+      // Non-fatal — continue without documents
+      console.warn("[brain] Could not fetch user documents:", err);
+    }
+
+    // ── Build system prompt ────────────────────────────────────────────────────
+    const systemPrompt = documentContext
+      ? `${BASE_PROMPT}\n\n${documentContext}\n\n${DOCUMENT_INSTRUCTION}`
+      : `${BASE_PROMPT}\n\n${DOCUMENT_INSTRUCTION}`;
+
+    // ── Validate message list ──────────────────────────────────────────────────
     const anthropicMessages = messages
       .filter((m) => m.role === "user" || m.role === "assistant")
       .map((m) => ({
@@ -37,8 +73,6 @@ export async function POST(request: Request) {
         content: m.content,
       }));
 
-    // Ensure messages alternate properly and start with user
-    // Remove trailing assistant messages
     while (
       anthropicMessages.length > 0 &&
       anthropicMessages[anthropicMessages.length - 1].role === "assistant"
@@ -53,10 +87,11 @@ export async function POST(request: Request) {
       });
     }
 
+    // ── Stream ─────────────────────────────────────────────────────────────────
     const stream = await client.messages.stream({
       model: "claude-sonnet-4-5",
       max_tokens: 2048,
-      system: SYSTEM_PROMPT,
+      system: systemPrompt,
       messages: anthropicMessages,
     });
 
