@@ -151,6 +151,23 @@ export interface UpcomingRacesResponse {
   races: Race[];
 }
 
+// North America-specific types (shape TBD from live response)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type NorthAmericaMeet = Record<string, any>;
+
+export interface NorthAmericaMeetsResponse {
+  meets: NorthAmericaMeet[];
+  [key: string]: unknown;
+}
+
+export interface NorthAmericaEntriesResponse {
+  [key: string]: unknown;
+}
+
+export interface NorthAmericaResultsResponse {
+  [key: string]: unknown;
+}
+
 // ─── Public functions ─────────────────────────────────────────────────────────
 
 /**
@@ -190,4 +207,35 @@ export async function getUpcomingRaces(
   const params: Record<string, string> = { date: today };
   if (track) params.course = track;
   return racingFetch<UpcomingRacesResponse>('/v1/racecards', params);
+}
+
+/**
+ * Fetch North American meets for a given date (YYYY-MM-DD).
+ */
+export async function getNorthAmericaMeets(
+  date: string,
+): Promise<NorthAmericaMeetsResponse> {
+  return racingFetch<NorthAmericaMeetsResponse>('/v1/north_america/meets', { date });
+}
+
+/**
+ * Fetch entries for a specific North American meet ID.
+ */
+export async function getNorthAmericaEntries(
+  meetId: string,
+): Promise<NorthAmericaEntriesResponse> {
+  return racingFetch<NorthAmericaEntriesResponse>(
+    `/v1/north_america/meets/${encodeURIComponent(meetId)}/entries`,
+  );
+}
+
+/**
+ * Fetch results for a specific North American meet ID.
+ */
+export async function getNorthAmericaResults(
+  meetId: string,
+): Promise<NorthAmericaResultsResponse> {
+  return racingFetch<NorthAmericaResultsResponse>(
+    `/v1/north_america/meets/${encodeURIComponent(meetId)}/results`,
+  );
 }

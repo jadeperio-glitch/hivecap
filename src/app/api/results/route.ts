@@ -10,7 +10,14 @@
  *   raceId  = required when action=racecard
  */
 
-import { getResults, getRacecard, getUpcomingRaces } from '@/lib/racing-api';
+import {
+  getResults,
+  getRacecard,
+  getUpcomingRaces,
+  getNorthAmericaMeets,
+  getNorthAmericaEntries,
+  getNorthAmericaResults,
+} from '@/lib/racing-api';
 
 export const runtime = 'nodejs';
 
@@ -21,6 +28,7 @@ export async function GET(request: Request) {
   const date = searchParams.get('date') ?? today;
   const track = searchParams.get('track') ?? undefined;
   const raceId = searchParams.get('raceId');
+  const meetId = searchParams.get('meetId');
 
   try {
     let data: unknown;
@@ -33,6 +41,21 @@ export async function GET(request: Request) {
 
     } else if (action === 'upcoming') {
       data = await getUpcomingRaces(track);
+
+    } else if (action === 'na_meets') {
+      data = await getNorthAmericaMeets(date);
+
+    } else if (action === 'na_entries') {
+      if (!meetId) {
+        return Response.json({ error: 'meetId param is required for action=na_entries' }, { status: 400 });
+      }
+      data = await getNorthAmericaEntries(meetId);
+
+    } else if (action === 'na_results') {
+      if (!meetId) {
+        return Response.json({ error: 'meetId param is required for action=na_results' }, { status: 400 });
+      }
+      data = await getNorthAmericaResults(meetId);
 
     } else {
       // Default: results

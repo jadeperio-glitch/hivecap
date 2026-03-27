@@ -45,9 +45,9 @@ const headers = { Authorization: `Basic ${encoded}`, Accept: 'application/json' 
 // ── 1 second delay to avoid rate limiting from any previous requests ─────────
 await new Promise(r => setTimeout(r, 1000));
 
-// ── Focused call: region=usa, 2026-03-26 ─────────────────────────────────────
-const DATE = '2026-03-26';
-const url = `${BASE_URL}/v1/results?start_date=${DATE}&end_date=${DATE}&region=usa`;
+// ── North America meets: today 2026-03-27 ────────────────────────────────────
+const DATE = '2026-03-27';
+const url = `${BASE_URL}/v1/north_america/meets?date=${DATE}`;
 
 console.log(`\nGET ${url}\n`);
 
@@ -61,11 +61,16 @@ if (!res.ok) {
 }
 
 const data = await res.json();
-const results = data.results ?? [];
+const meets = data.meets ?? data;
 
-console.log(`\nResult count : ${results.length}`);
+console.log(`\nTop-level keys : ${Object.keys(data).join(', ')}`);
+console.log(`Meet count     : ${Array.isArray(meets) ? meets.length : '(not an array)'}`);
 console.log();
 
-results.slice(0, 3).forEach((race, i) => {
-  console.log(`[${i + 1}] course: ${race.course}  |  region: ${race.region}`);
-});
+if (Array.isArray(meets) && meets.length > 0) {
+  console.log('First meet (full object):');
+  console.log(JSON.stringify(meets[0], null, 2));
+} else {
+  console.log('Full response:');
+  console.log(JSON.stringify(data, null, 2));
+}
