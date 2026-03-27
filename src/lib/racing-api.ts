@@ -151,13 +151,19 @@ export interface UpcomingRacesResponse {
   races: Race[];
 }
 
-// North America-specific types (shape TBD from live response)
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type NorthAmericaMeet = Record<string, any>;
+export interface NorthAmericaMeet {
+  meet_id: string;
+  track_id: string;
+  track_name: string;
+  country: string;
+  date: string; // YYYY-MM-DD
+}
 
 export interface NorthAmericaMeetsResponse {
   meets: NorthAmericaMeet[];
-  [key: string]: unknown;
+  limit: number;
+  skip: number;
+  query: unknown;
 }
 
 export interface NorthAmericaEntriesResponse {
@@ -215,7 +221,7 @@ export async function getUpcomingRaces(
 export async function getNorthAmericaMeets(
   date: string,
 ): Promise<NorthAmericaMeetsResponse> {
-  return racingFetch<NorthAmericaMeetsResponse>('/v1/north_america/meets', { date });
+  return racingFetch<NorthAmericaMeetsResponse>('/v1/north-america/meets', { date });
 }
 
 /**
@@ -225,7 +231,7 @@ export async function getNorthAmericaEntries(
   meetId: string,
 ): Promise<NorthAmericaEntriesResponse> {
   return racingFetch<NorthAmericaEntriesResponse>(
-    `/v1/north_america/meets/${encodeURIComponent(meetId)}/entries`,
+    `/v1/north-america/meets/${encodeURIComponent(meetId)}/entries`,
   );
 }
 
@@ -236,6 +242,6 @@ export async function getNorthAmericaResults(
   meetId: string,
 ): Promise<NorthAmericaResultsResponse> {
   return racingFetch<NorthAmericaResultsResponse>(
-    `/v1/north_america/meets/${encodeURIComponent(meetId)}/results`,
+    `/v1/north-america/meets/${encodeURIComponent(meetId)}/results`,
   );
 }

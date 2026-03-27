@@ -2,11 +2,7 @@
  * Quick smoke-test for The Racing API.
  * Run from project root: node scripts/test-racing-api.mjs
  *
- * Reads RACING_API_USERNAME, RACING_API_PASSWORD, and RACING_API_BASE_URL from .env.local directly —
- * no dev server needed.
- *
- * Region codes: usa | can | gb | ire | fr | hk
- * North America data requires the "North America Add-on" in your Racing API dashboard.
+ * Confirmed endpoint: /v1/north-america/meets (hyphen, not underscore)
  */
 
 import { readFileSync } from 'fs';
@@ -29,48 +25,34 @@ try {
   process.exit(1);
 }
 
-const BASE_URL  = (env.RACING_API_BASE_URL  ?? '').replace(/\/$/, '');
-const USERNAME  = env.RACING_API_USERNAME  ?? '';
-const PASSWORD  = env.RACING_API_PASSWORD  ?? '';
+const BASE_URL = (env.RACING_API_BASE_URL ?? '').replace(/\/$/, '');
+const USERNAME = env.RACING_API_USERNAME ?? '';
+const PASSWORD = env.RACING_API_PASSWORD ?? '';
 
 if (!BASE_URL || !USERNAME || !PASSWORD) {
   console.error('RACING_API_BASE_URL, RACING_API_USERNAME, and RACING_API_PASSWORD must be set in .env.local');
   process.exit(1);
 }
 
-// ── Auth ─────────────────────────────────────────────────────────────────────
 const encoded = Buffer.from(`${USERNAME}:${PASSWORD}`).toString('base64');
 const headers = { Authorization: `Basic ${encoded}`, Accept: 'application/json' };
 
-// ── 1 second delay to avoid rate limiting from any previous requests ─────────
 await new Promise(r => setTimeout(r, 1000));
 
-// ── North America meets: today 2026-03-27 ────────────────────────────────────
 const DATE = '2026-03-27';
-const url = `${BASE_URL}/v1/north_america/meets?date=${DATE}`;
+const url = `${BASE_URL}/v1/north-america/meets?date=${DATE}`;
 
 console.log(`\nGET ${url}\n`);
 
 const res = await fetch(url, { headers });
 console.log(`HTTP ${res.status} ${res.statusText}`);
 
-if (!res.ok) {
-  const body = await res.text().catch(() => '');
-  console.error('Error body:', body || '(empty)');
-  process.exit(1);
-}
-
 const data = await res.json();
-const meets = data.meets ?? data;
+const meets = data.meets ?? [];
 
-console.log(`\nTop-level keys : ${Object.keys(data).join(', ')}`);
-console.log(`Meet count     : ${Array.isArray(meets) ? meets.length : '(not an array)'}`);
+console.log(`\nMeet count : ${meets.length}`);
 console.log();
 
-if (Array.isArray(meets) && meets.length > 0) {
-  console.log('First meet (full object):');
-  console.log(JSON.stringify(meets[0], null, 2));
-} else {
-  console.log('Full response:');
-  console.log(JSON.stringify(data, null, 2));
-}
+meets.slice(0, 3).forEach((meet, i) => {
+  console.log(`[${i + 1}] ${meet.track_name} (${meet.track_id}) | ${meet.date} | meet_id: ${meet.meet_id}`);
+});
