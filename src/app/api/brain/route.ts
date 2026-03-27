@@ -22,8 +22,10 @@ export const runtime = "nodejs";
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { messages } = body as {
+    const { messages, conversation_id, user_message } = body as {
       messages: Array<{ role: "user" | "assistant"; content: string }>;
+      conversation_id?: string;
+      user_message?: string;
     };
 
     if (!messages || !Array.isArray(messages)) {
@@ -33,9 +35,11 @@ export async function POST(request: Request) {
       });
     }
 
-    // ── Fetch user documents ───────────────────────────────────────────────────
+    // ── Fetch user + documents ─────────────────────────────────────────────────
     // Gracefully degrades — if auth fails, Brain still works without doc context.
     let documentContext = "";
+    let userId: string | null = null;
+
     try {
       const supabase = createClient();
       const {
@@ -43,6 +47,8 @@ export async function POST(request: Request) {
       } = await supabase.auth.getUser();
 
       if (user) {
+        userId = user.id;
+
         const { data: docs } = await supabase
           .from("user_documents")
           .select("filename, extracted_text")
@@ -56,8 +62,24 @@ export async function POST(request: Request) {
         }
       }
     } catch (err) {
-      // Non-fatal — continue without documents
+      // Non-fatal — continue without documents or persistence
       console.warn("[brain] Could not fetch user documents:", err);
+    }
+
+    // ── Save user message (fire-and-forget, non-fatal) ─────────────────────────
+    if (userId && conversation_id && user_message) {
+      const supabase = createClient();
+      supabase
+        .from("messages")
+        .insert({
+          conversation_id,
+          user_id: userId,
+          role: "user",
+          content: user_message,
+        })
+        .then(({ error }) => {
+          if (error) console.error("[brain] Failed to save user message:", error.message);
+        });
     }
 
     // ── Build system prompt ────────────────────────────────────────────────────
@@ -95,21 +117,48 @@ export async function POST(request: Request) {
       messages: anthropicMessages,
     });
 
+    // Capture for use inside the ReadableStream closure
+    const capturedUserId = userId;
+    const capturedConvId = conversation_id;
+
     const readableStream = new ReadableStream({
       async start(controller) {
         const encoder = new TextEncoder();
+        let fullText = "";
         try {
           for await (const chunk of stream) {
             if (
               chunk.type === "content_block_delta" &&
               chunk.delta.type === "text_delta"
             ) {
+              fullText += chunk.delta.text;
               controller.enqueue(encoder.encode(chunk.delta.text));
             }
           }
           controller.close();
         } catch (err) {
           controller.error(err);
+        }
+
+        // ── Persist assistant message + bump conversation updated_at ───────────
+        if (capturedUserId && capturedConvId && fullText) {
+          try {
+            const supabase = createClient();
+            await Promise.all([
+              supabase.from("messages").insert({
+                conversation_id: capturedConvId,
+                user_id: capturedUserId,
+                role: "assistant",
+                content: fullText,
+              }),
+              supabase
+                .from("conversations")
+                .update({ updated_at: new Date().toISOString() })
+                .eq("id", capturedConvId),
+            ]);
+          } catch (err) {
+            console.error("[brain] Failed to persist assistant message:", err);
+          }
         }
       },
     });

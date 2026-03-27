@@ -21,6 +21,12 @@ type UploadStatus = "idle" | "uploading" | "done" | "error";
 
 const MAX_BYTES = 10 * 1024 * 1024;
 
+const WELCOME_MESSAGE: Message = {
+  role: "assistant",
+  content:
+    "Welcome to HiveCap Brain. I'm your expert horse racing analyst — ask me about Beyer Speed Figures, pace analysis, pedigree research, wagering strategy, or the 2026 Kentucky Derby field. What are we handicapping today?",
+};
+
 function TypingIndicator() {
   return (
     <div className="flex items-end gap-3 mb-4">
@@ -69,17 +75,15 @@ function MessageBubble({ message }: { message: Message }) {
 
 export default function BrainPage() {
   const router = useRouter();
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      role: "assistant",
-      content:
-        "Welcome to HiveCap Brain. I'm your expert horse racing analyst — ask me about Beyer Speed Figures, pace analysis, pedigree research, wagering strategy, or the 2026 Kentucky Derby field. What are we handicapping today?",
-    },
-  ]);
+  const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState<string | null>(null);
+
+  // Conversation persistence state
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [isLoadingConversation, setIsLoadingConversation] = useState(true);
 
   // Document upload state
   const [documents, setDocuments] = useState<UserDocument[]>([]);
@@ -109,6 +113,40 @@ export default function BrainPage() {
     if (data) setDocuments(data);
   }, []);
 
+  const fetchRecentConversation = useCallback(async () => {
+    setIsLoadingConversation(true);
+    try {
+      const supabase = createClient();
+
+      // Load most recent conversation by updated_at
+      const { data: conv } = await supabase
+        .from("conversations")
+        .select("id")
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (conv) {
+        setConversationId(conv.id);
+
+        // Load its messages in chronological order
+        const { data: msgs } = await supabase
+          .from("messages")
+          .select("role, content")
+          .eq("conversation_id", conv.id)
+          .order("created_at", { ascending: true });
+
+        if (msgs && msgs.length > 0) {
+          setMessages(msgs as Message[]);
+        }
+      }
+    } catch (err) {
+      console.warn("[brain] Could not load conversation:", err);
+    } finally {
+      setIsLoadingConversation(false);
+    }
+  }, []);
+
   useEffect(() => {
     const supabase = createClient();
     supabase.auth.getUser().then(({ data: { user } }) => {
@@ -117,9 +155,10 @@ export default function BrainPage() {
       } else {
         setUserEmail(user.email ?? null);
         fetchDocuments();
+        fetchRecentConversation();
       }
     });
-  }, [router, fetchDocuments]);
+  }, [router, fetchDocuments, fetchRecentConversation]);
 
   async function handleUpload(file: File) {
     if (file.type !== "application/pdf") {
@@ -158,7 +197,6 @@ export default function BrainPage() {
   function handleFileInputChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (file) handleUpload(file);
-    // Reset so same file can be re-selected
     e.target.value = "";
   }
 
@@ -203,6 +241,25 @@ export default function BrainPage() {
       textareaRef.current.style.height = "auto";
     }
 
+    // Ensure a conversation exists before sending
+    let activeConvId = conversationId;
+    if (!activeConvId) {
+      try {
+        const supabase = createClient();
+        const { data: conv } = await supabase
+          .from("conversations")
+          .insert({ title: trimmed.slice(0, 60) })
+          .select("id")
+          .single();
+        if (conv) {
+          activeConvId = conv.id;
+          setConversationId(conv.id);
+        }
+      } catch (err) {
+        console.warn("[brain] Could not create conversation:", err);
+      }
+    }
+
     try {
       const response = await fetch("/api/brain", {
         method: "POST",
@@ -212,6 +269,8 @@ export default function BrainPage() {
             role: m.role,
             content: m.content,
           })),
+          conversation_id: activeConvId ?? undefined,
+          user_message: trimmed,
         }),
       });
 
@@ -428,16 +487,24 @@ export default function BrainPage() {
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 md:px-6 py-6">
         <div className="max-w-4xl mx-auto">
-          {messages.map((message, i) => (
-            <MessageBubble key={i} message={message} />
-          ))}
-          {isLoading && <TypingIndicator />}
-          {error && (
-            <div className="flex justify-center mb-4">
-              <div className="bg-red-900/20 border border-red-500/30 rounded-lg px-4 py-2">
-                <p className="text-red-400 text-xs">{error}</p>
-              </div>
+          {isLoadingConversation ? (
+            <div className="flex items-center justify-center py-16 text-charcoal/30 dark:text-cream/30 text-sm">
+              Loading conversation…
             </div>
+          ) : (
+            <>
+              {messages.map((message, i) => (
+                <MessageBubble key={i} message={message} />
+              ))}
+              {isLoading && <TypingIndicator />}
+              {error && (
+                <div className="flex justify-center mb-4">
+                  <div className="bg-red-900/20 border border-red-500/30 rounded-lg px-4 py-2">
+                    <p className="text-red-400 text-xs">{error}</p>
+                  </div>
+                </div>
+              )}
+            </>
           )}
           <div ref={messagesEndRef} />
         </div>
@@ -454,12 +521,12 @@ export default function BrainPage() {
               onKeyDown={handleKeyDown}
               placeholder="Ask about a race, horse, or wagering strategy…"
               rows={1}
-              disabled={isLoading}
+              disabled={isLoading || isLoadingConversation}
               className="flex-1 bg-transparent text-charcoal dark:text-cream placeholder:text-charcoal/25 dark:placeholder:text-cream/25 text-sm resize-none leading-relaxed outline-none disabled:opacity-50 max-h-40 py-0.5"
             />
             <button
               onClick={sendMessage}
-              disabled={isLoading || !input.trim()}
+              disabled={isLoading || isLoadingConversation || !input.trim()}
               className="flex-shrink-0 w-9 h-9 bg-gold rounded-xl flex items-center justify-center hover:bg-gold/85 disabled:opacity-40 disabled:cursor-not-allowed transition-all duration-200 shadow-md shadow-gold/20"
             >
               <svg
