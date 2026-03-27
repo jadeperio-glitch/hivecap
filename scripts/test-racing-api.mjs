@@ -43,8 +43,11 @@ const encoded = Buffer.from(`${USERNAME}:${PASSWORD}`).toString('base64');
 const headers = { Authorization: `Basic ${encoded}`, Accept: 'application/json' };
 
 const today = new Date().toISOString().split('T')[0];
+const yesterday = new Date(Date.now() - 864e5).toISOString().split('T')[0];
 
-// ── Shared fetch-and-log helper ───────────────────────────────────────────────
+// ── Shared helpers ────────────────────────────────────────────────────────────
+
+// Full dump — used for global baseline
 async function fetchAndLog(url, label) {
   console.log(`\n${'─'.repeat(60)}`);
   console.log(`${label}`);
@@ -80,7 +83,7 @@ async function fetchAndLog(url, label) {
         console.log(JSON.stringify(first.runners[0], null, 2));
       }
     } else {
-      console.log(`No ${firstArrayKey} returned for ${today} — try a past date with results.`);
+      console.log(`No ${firstArrayKey} returned — try a different date.`);
     }
   } else {
     console.log('\nFull response:');
@@ -88,17 +91,60 @@ async function fetchAndLog(url, label) {
   }
 }
 
-// ── Call 1: Global results (no region filter) ─────────────────────────────────
+// Summary only — count + first item's course and region
+async function fetchAndLogSummary(url, label) {
+  console.log(`\n${'─'.repeat(60)}`);
+  console.log(`${label}`);
+  console.log(`GET ${url}`);
+  console.log('─'.repeat(60));
+
+  const res = await fetch(url, { headers });
+  console.log(`HTTP ${res.status} ${res.statusText}`);
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    console.error('Error body:', body || '(empty)');
+    return;
+  }
+
+  const data = await res.json();
+  const results = data.results ?? [];
+
+  console.log(`Result count : ${results.length}`);
+  if (results.length > 0) {
+    console.log(`First course : ${results[0].course}`);
+    console.log(`First region : ${results[0].region}`);
+  }
+}
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+// ── Call 0: Global baseline (no region filter, today) ────────────────────────
 await fetchAndLog(
   `${BASE_URL}/v1/results?start_date=${today}&end_date=${today}`,
-  'Global results (no region filter)',
+  'Global results — no region filter, today',
 );
 
-// ── Call 2: North America results (region=usa) ────────────────────────────────
-// The Racing API region codes: usa | can | gb | ire | fr | hk
-// Note: the correct value is "usa", not "us".
-// For Canadian tracks use region=can instead.
-await fetchAndLog(
-  `${BASE_URL}/v1/results?start_date=${today}&end_date=${today}&region=usa`,
-  'North America results (region=usa)',
+await sleep(300);
+
+// ── Call 1: region=us, today ──────────────────────────────────────────────────
+await fetchAndLogSummary(
+  `${BASE_URL}/v1/results?start_date=${today}&end_date=${today}&region=us`,
+  `region=us, today (${today})`,
+);
+
+await sleep(300);
+
+// ── Call 2: region=usa, yesterday ────────────────────────────────────────────
+await fetchAndLogSummary(
+  `${BASE_URL}/v1/results?start_date=${yesterday}&end_date=${yesterday}&region=usa`,
+  `region=usa, yesterday (${yesterday})`,
+);
+
+await sleep(300);
+
+// ── Call 3: region=us, yesterday ─────────────────────────────────────────────
+await fetchAndLogSummary(
+  `${BASE_URL}/v1/results?start_date=${yesterday}&end_date=${yesterday}&region=us`,
+  `region=us, yesterday (${yesterday})`,
 );
