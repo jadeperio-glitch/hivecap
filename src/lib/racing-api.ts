@@ -55,27 +55,27 @@ async function racingFetch<T>(
 export interface Runner {
   horse_id: string;
   horse: string;            // horse name
-  number: number;           // cloth / saddlecloth number
+  number: string;           // cloth / saddlecloth number (API returns as string)
   position: string;         // finishing position, or "F" / "U" / "R" etc.
-  draw: number | null;      // stall draw (null on jumps / where N/A)
-  btn: string | null;       // beaten distance from winner
-  ovr_btn: string | null;   // overall beaten distance (cumulative)
+  draw: string;             // stall draw (empty string where N/A)
+  btn: string;              // beaten distance from winner (empty string for winner)
+  ovr_btn: string;          // overall beaten distance (empty string for winner)
   age: string;
   sex: string;              // "G" gelding, "M" mare, "C" colt, etc.
   weight: string;           // carried weight in stones-lbs e.g. "9-2"
-  weight_lbs: number;       // carried weight in lbs
-  headgear: string | null;  // e.g. "b" blinkers, "v" visor, null if none
-  time: string | null;      // finishing time (winner only, others null)
+  weight_lbs: string;       // carried weight in lbs (API returns as string)
+  headgear: string;         // e.g. "b" blinkers, "v" visor, "" if none
+  time: string;             // finishing time (winner only, "" for others)
   sp: string;               // starting price as fraction e.g. "5/1"
-  sp_dec: number;           // starting price as decimal e.g. 6.0
-  bsp: number | null;       // Betfair SP
-  or: number | null;        // Official Rating
-  rpr: number | null;       // Racing Post Rating
-  tsr: number | null;       // Top Speed Rating
-  prize: string | null;     // prize money earned
+  sp_dec: string;           // starting price as decimal e.g. "6.00" (API returns as string)
+  bsp: string;              // Betfair SP (empty string if unavailable)
+  or: string;               // Official Rating ("–" if unavailable)
+  rpr: string;              // Racing Post Rating ("–" if unavailable)
+  tsr: string;              // Top Speed Rating ("–" if unavailable)
+  prize: string;            // prize money earned (empty string if none)
   jockey: string;
   jockey_id: string;
-  jockey_claim_lbs: number; // weight allowance claimed (0 if none)
+  jockey_claim_lbs: string; // weight allowance claimed (API returns as string)
   trainer: string;
   trainer_id: string;
   owner: string;
@@ -86,8 +86,8 @@ export interface Runner {
   dam_id: string;
   damsire: string;
   damsire_id: string;
-  comment: string | null;   // race-day comment / notes
-  silk_url: string | null;  // URL to jockey silk image
+  comment: string;          // race-day comment / notes (empty string if none)
+  silk_url: string;         // URL to jockey silk image (empty string if none)
 }
 
 export interface Race {
@@ -113,7 +113,7 @@ export interface Race {
   surface: string;          // "Turf" | "Dirt" | "Synthetic"
   jumps: string | null;     // hurdle / fence details (jumps races)
   runners: Runner[];
-  non_runners: string[];    // list of non-runner horse names
+  non_runners: string;      // comma-separated non-runner names (empty string if none)
   winning_time_detail: string | null;
   comments: string | null;  // race-level stewards / race comments
   tote_win: string | null;
