@@ -85,45 +85,61 @@ export async function POST(request: Request) {
         console.log("[brain] loaded shared community posts:", sharedPosts.length);
       }
     } catch (err) {
-      console.warn("[brain] shared posts fetch threw:", err);
+      const e = err as Error & { cause?: unknown };
+      console.error("[brain] community posts failed:", e?.message);
+      console.error("[brain] community posts stack:", e?.stack);
+      if (e?.cause) console.error("[brain] community posts cause:", e.cause);
     }
 
-    // ── Auth + documents ───────────────────────────────────────────────────────
+    // ── Auth ───────────────────────────────────────────────────────────────────
     // Gracefully degrades — if auth fails, Brain still works without doc context.
     let documentContext = "";
     let userId: string | null = null;
 
     try {
       const supabase = createClient();
-      const {
-        data: { user },
-        error: authErr,
-      } = await supabase.auth.getUser();
-
+      const { data: { user }, error: authErr } = await supabase.auth.getUser();
       if (authErr) {
-        console.error("[brain] auth.getUser error:", authErr.message);
+        console.error("[brain] auth failed:", authErr.message, "| code:", authErr.status);
       } else if (user) {
         userId = user.id;
         console.log("[brain] authenticated user:", userId);
+      } else {
+        console.warn("[brain] no authenticated user — persistence and docs disabled");
+      }
+    } catch (err) {
+      const e = err as Error & { cause?: unknown };
+      console.error("[brain] auth threw:", e?.message);
+      console.error("[brain] auth stack:", e?.stack);
+      if (e?.cause) console.error("[brain] auth cause:", e.cause);
+    }
 
+    // ── User documents ─────────────────────────────────────────────────────────
+    if (userId) {
+      try {
+        const supabase = createClient();
         const { data: docs, error: docsErr } = await supabase
           .from("user_documents")
           .select("filename, extracted_text")
-          .eq("user_id", user.id)
+          .eq("user_id", userId)
           .order("created_at", { ascending: false });
 
         if (docsErr) {
-          console.error("[brain] user_documents query error:", docsErr.message);
+          console.error("[brain] user documents failed:", docsErr.message, "| code:", docsErr.code);
         } else if (docs && docs.length > 0) {
           documentContext = docs
             .map((d) => `--- Document: ${d.filename} ---\n${d.extracted_text}`)
             .join("\n\n");
+          console.log("[brain] loaded user documents:", docs.length);
+        } else {
+          console.log("[brain] no user documents found");
         }
-      } else {
-        console.warn("[brain] No authenticated user — persistence disabled");
+      } catch (err) {
+        const e = err as Error & { cause?: unknown };
+        console.error("[brain] user documents threw:", e?.message);
+        console.error("[brain] user documents stack:", e?.stack);
+        if (e?.cause) console.error("[brain] user documents cause:", e.cause);
       }
-    } catch (err) {
-      console.warn("[brain] Auth/docs setup threw:", err);
     }
 
     // ── Resolve conversation (server creates if client didn't supply one) ───────
@@ -251,6 +267,11 @@ export async function POST(request: Request) {
           }
           controller.close();
         } catch (err) {
+          const e = err as Error & { status?: number; cause?: unknown };
+          console.error("[brain] anthropic stream failed:", e?.message);
+          console.error("[brain] anthropic stream status:", e?.status);
+          console.error("[brain] anthropic stream stack:", e?.stack);
+          if (e?.cause) console.error("[brain] anthropic stream cause:", e.cause);
           controller.error(err);
         }
 
@@ -293,12 +314,13 @@ export async function POST(request: Request) {
       },
     });
   } catch (error) {
-    const e = error as Error & { status?: number; error?: unknown; code?: string };
-    console.error("[brain] Unhandled error in POST handler:");
+    const e = error as Error & { status?: number; error?: unknown; code?: string; cause?: unknown };
+    console.error("[brain] unhandled error in POST handler:");
     console.error("  name:", e?.name);
     console.error("  message:", e?.message);
     console.error("  status:", e?.status);
     console.error("  code:", e?.code);
+    console.error("  cause:", e?.cause);
     console.error("  error body:", JSON.stringify(e?.error ?? null));
     console.error("  stack:", e?.stack);
     console.error("  raw:", error);
