@@ -64,16 +64,18 @@ export async function POST(request: Request) {
         .select("username, user_email, content, created_at")
         .eq("brain_verified", true)
         .order("created_at", { ascending: false })
-        .limit(20);
+        .limit(10);
 
       if (sharedErr) {
         console.error("[brain] shared posts query error:", sharedErr.message);
       } else if (sharedPosts && sharedPosts.length > 0) {
+        const POST_MAX = 300;
         const entries = sharedPosts
           .map((p) => {
             const author = p.username ?? p.user_email;
             const date = new Date(p.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-            return `[${author} · ${date}]\n${p.content}`;
+            const body = p.content.length > POST_MAX ? p.content.slice(0, POST_MAX) + "…" : p.content;
+            return `[${author} · ${date}]\n${body}`;
           })
           .join("\n\n");
         sharedIntelligenceContext =
@@ -122,15 +124,22 @@ export async function POST(request: Request) {
           .from("user_documents")
           .select("filename, extracted_text")
           .eq("user_id", userId)
-          .order("created_at", { ascending: false });
+          .order("created_at", { ascending: false })
+          .limit(5);
 
         if (docsErr) {
           console.error("[brain] user documents failed:", docsErr.message, "| code:", docsErr.code);
         } else if (docs && docs.length > 0) {
+          const DOC_MAX = 3000;
           documentContext = docs
-            .map((d) => `--- Document: ${d.filename} ---\n${d.extracted_text}`)
+            .map((d) => {
+              const text = d.extracted_text.length > DOC_MAX
+                ? d.extracted_text.slice(0, DOC_MAX) + "…"
+                : d.extracted_text;
+              return `--- Document: ${d.filename} ---\n${text}`;
+            })
             .join("\n\n");
-          console.log("[brain] loaded user documents:", docs.length);
+          console.log("[brain] loaded user documents:", docs.length, "| doc context chars:", documentContext.length);
         } else {
           console.log("[brain] no user documents found");
         }
@@ -200,9 +209,10 @@ export async function POST(request: Request) {
     }
     const systemPrompt = contextParts.join("\n\n");
 
-    // ── Validate message list ──────────────────────────────────────────────────
+    // ── Validate and trim message list ────────────────────────────────────────
     const anthropicMessages = messages
       .filter((m) => m.role === "user" || m.role === "assistant")
+      .slice(-10)
       .map((m) => ({
         role: m.role as "user" | "assistant",
         content: m.content,
@@ -227,7 +237,7 @@ export async function POST(request: Request) {
     // the HTTP request immediately, so auth/quota errors surface here (before
     // the Response is returned) rather than silently inside ReadableStream.start().
     const model = "claude-sonnet-4-5";
-    console.error("[brain] calling Anthropic — model:", model, "| messages:", anthropicMessages.length, "| system prompt length:", systemPrompt.length);
+    console.log("[brain] prompt budget — system:", systemPrompt.length, "chars | community:", sharedIntelligenceContext.length, "chars | docs:", documentContext.length, "chars | messages:", anthropicMessages.length);
 
     let stream: AsyncIterable<{ type: string; delta?: { type: string; text?: string } }>;
     try {
