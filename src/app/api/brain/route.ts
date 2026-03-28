@@ -223,15 +223,21 @@ export async function POST(request: Request) {
     }
 
     // ── Stream ─────────────────────────────────────────────────────────────────
-    console.log("[brain] calling Anthropic API — model: claude-sonnet-4-5, messages:", anthropicMessages.length);
-    let stream;
+    // Use messages.create({ stream: true }) — this is a real Promise that fires
+    // the HTTP request immediately, so auth/quota errors surface here (before
+    // the Response is returned) rather than silently inside ReadableStream.start().
+    const model = "claude-sonnet-4-5";
+    console.error("[brain] calling Anthropic — model:", model, "| messages:", anthropicMessages.length, "| system prompt length:", systemPrompt.length);
+
+    let stream: AsyncIterable<{ type: string; delta?: { type: string; text?: string } }>;
     try {
-      stream = await client.messages.stream({
-        model: "claude-sonnet-4-5",
+      stream = await client.messages.create({
+        model,
         max_tokens: 2048,
         system: systemPrompt,
         messages: anthropicMessages,
-      });
+        stream: true,
+      }) as AsyncIterable<{ type: string; delta?: { type: string; text?: string } }>;
     } catch (anthropicErr) {
       const e = anthropicErr as Error & { status?: number; error?: unknown };
       console.error("[brain] Anthropic API call failed:");
@@ -245,7 +251,7 @@ export async function POST(request: Request) {
         { status: 502, headers: { "Content-Type": "application/json" } }
       );
     }
-    console.log("[brain] Anthropic stream opened");
+    console.error("[brain] Anthropic stream opened successfully");
 
     // Capture for closure
     const capturedUserId = userId;
@@ -259,7 +265,8 @@ export async function POST(request: Request) {
           for await (const chunk of stream) {
             if (
               chunk.type === "content_block_delta" &&
-              chunk.delta.type === "text_delta"
+              chunk.delta?.type === "text_delta" &&
+              chunk.delta.text
             ) {
               fullText += chunk.delta.text;
               controller.enqueue(encoder.encode(chunk.delta.text));
