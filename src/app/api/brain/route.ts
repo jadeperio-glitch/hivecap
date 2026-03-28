@@ -21,6 +21,20 @@ const DOCUMENT_INSTRUCTION =
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
+  // ── Startup env checks ──────────────────────────────────────────────────────
+  if (!process.env.ANTHROPIC_API_KEY) {
+    console.error("[brain] FATAL: ANTHROPIC_API_KEY is not set");
+    return new Response(JSON.stringify({ error: "Server misconfiguration: missing API key" }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+    console.error("[brain] FATAL: Supabase env vars missing — URL or ANON_KEY not set");
+  }
+
+  console.log("[brain] POST request received");
+
   try {
     const body = await request.json();
     const { messages, conversation_id, user_message } = body as {
@@ -35,6 +49,8 @@ export async function POST(request: Request) {
         headers: { "Content-Type": "application/json" },
       });
     }
+
+    console.log("[brain] messages count:", messages.length, "| conversation_id:", conversation_id ?? "none");
 
     // ── Shared community intelligence (Rule D) ─────────────────────────────────
     // Fetch the 20 most recent brain_verified posts regardless of which user is
@@ -191,12 +207,29 @@ export async function POST(request: Request) {
     }
 
     // ── Stream ─────────────────────────────────────────────────────────────────
-    const stream = await client.messages.stream({
-      model: "claude-sonnet-4-5",
-      max_tokens: 2048,
-      system: systemPrompt,
-      messages: anthropicMessages,
-    });
+    console.log("[brain] calling Anthropic API — model: claude-sonnet-4-5, messages:", anthropicMessages.length);
+    let stream;
+    try {
+      stream = await client.messages.stream({
+        model: "claude-sonnet-4-5",
+        max_tokens: 2048,
+        system: systemPrompt,
+        messages: anthropicMessages,
+      });
+    } catch (anthropicErr) {
+      const e = anthropicErr as Error & { status?: number; error?: unknown };
+      console.error("[brain] Anthropic API call failed:");
+      console.error("  name:", e.name);
+      console.error("  message:", e.message);
+      console.error("  status:", e.status);
+      console.error("  error body:", JSON.stringify(e.error ?? null));
+      console.error("  stack:", e.stack);
+      return new Response(
+        JSON.stringify({ error: "AI service error: " + e.message }),
+        { status: 502, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    console.log("[brain] Anthropic stream opened");
 
     // Capture for closure
     const capturedUserId = userId;
@@ -260,9 +293,16 @@ export async function POST(request: Request) {
       },
     });
   } catch (error) {
-    console.error("Brain API error:", error);
-    const message =
-      error instanceof Error ? error.message : "Internal server error";
+    const e = error as Error & { status?: number; error?: unknown; code?: string };
+    console.error("[brain] Unhandled error in POST handler:");
+    console.error("  name:", e?.name);
+    console.error("  message:", e?.message);
+    console.error("  status:", e?.status);
+    console.error("  code:", e?.code);
+    console.error("  error body:", JSON.stringify(e?.error ?? null));
+    console.error("  stack:", e?.stack);
+    console.error("  raw:", error);
+    const message = e?.message ?? "Internal server error";
     return new Response(JSON.stringify({ error: message }), {
       status: 500,
       headers: { "Content-Type": "application/json" },
