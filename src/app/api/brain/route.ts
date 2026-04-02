@@ -46,7 +46,7 @@ function extractQueryTerms(query: string): string[] {
   const terms: string[] = [];
   const seen = new Set<string>();
 
-  const matches = query.matchAll(/\b([A-Z][a-zA-Z']+(?:\s+[A-Z][a-zA-Z']+){0,3})\b/g);
+  const matches = Array.from(query.matchAll(/\b([A-Z][a-zA-Z']+(?:\s+[A-Z][a-zA-Z']+){0,3})\b/g));
   for (const m of matches) {
     const term = m[1].trim();
     const lower = term.toLowerCase();
