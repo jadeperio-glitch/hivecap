@@ -17,7 +17,19 @@ interface UserDocument {
   created_at: string;
 }
 
-type UploadStatus = "idle" | "uploading" | "done" | "error";
+type UploadStatus = "idle" | "uploading" | "scanning" | "done" | "error";
+
+interface PendingIngestion {
+  pending_document_id: string;
+  document_type: string;
+  total_races: number;
+  race_date: string | null;
+  track_name: string | null;
+  track_abbreviation: string | null;
+  races_pending: number[];
+  races_extracted: number[];
+  filename: string;
+}
 
 const MAX_BYTES = 10 * 1024 * 1024;
 
@@ -100,6 +112,10 @@ export default function BrainPage() {
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Ingestion pipeline state
+  const [pendingIngestion, setPendingIngestion] = useState<PendingIngestion | null>(null);
+  const [extractingRace, setExtractingRace] = useState(false);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -177,6 +193,14 @@ export default function BrainPage() {
     });
   }, [router, fetchDocuments, fetchRecentConversation]);
 
+  async function computeSHA256(file: File): Promise<string> {
+    const buffer = await file.arrayBuffer();
+    const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
+    return Array.from(new Uint8Array(hashBuffer))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+  }
+
   async function handleUpload(file: File) {
     if (file.type !== "application/pdf") {
       setUploadStatus("error");
@@ -191,23 +215,124 @@ export default function BrainPage() {
 
     setUploadStatus("uploading");
     setUploadError(null);
-
-    const formData = new FormData();
-    formData.append("file", file);
+    setPendingIngestion(null);
 
     try {
-      const res = await fetch("/api/upload", { method: "POST", body: formData });
-      const json = await res.json();
+      // Step 1: Client-side SHA-256 hash (before any network call — dedup check is free)
+      const hash = await computeSHA256(file);
+
+      // Steps 1–2b: Upload + scan (doc type detection, race count, job queue creation)
+      setUploadStatus("scanning");
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("hash", hash);
+
+      const res = await fetch("/api/ingest", { method: "POST", body: formData });
+      const data = await res.json();
+
       if (!res.ok) {
-        throw new Error(json.error || `HTTP ${res.status}`);
+        throw new Error(data.error || `HTTP ${res.status}`);
       }
+
+      if (data.duplicate) {
+        // Step 2a: Duplicate detected — file never moved, surface to user
+        setUploadStatus("done");
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: data.message ?? "Brain already has this document." },
+        ]);
+        setTimeout(() => setUploadStatus("idle"), 3000);
+        return;
+      }
+
+      // Step 2b: Scan complete — prompt user to select a race
       setUploadStatus("done");
       await fetchDocuments();
       setShowDocs(true);
+
+      const totalRaces: number = data.total_races ?? 1;
+      const trackLabel = data.track_name ?? "the track";
+      const dateLabel = data.race_date ? ` on ${data.race_date}` : "";
+      const docType: string = data.document_type ?? "document";
+
+      setPendingIngestion({
+        pending_document_id: data.pending_document_id,
+        document_type: docType,
+        total_races: totalRaces,
+        race_date: data.race_date ?? null,
+        track_name: data.track_name ?? null,
+        track_abbreviation: data.track_abbreviation ?? null,
+        races_pending: data.races_pending ?? Array.from({ length: totalRaces }, (_, i) => i + 1),
+        races_extracted: [],
+        filename: file.name,
+      });
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: `I found ${totalRaces} race${totalRaces !== 1 ? "s" : ""} in this ${docType.replace("_", " ")}${dateLabel} at ${trackLabel}. Which race do you want to start with?`,
+        },
+      ]);
+
       setTimeout(() => setUploadStatus("idle"), 3000);
     } catch (err) {
       setUploadStatus("error");
       setUploadError(err instanceof Error ? err.message : "Upload failed");
+    }
+  }
+
+  async function handleExtractRace(raceIndex: number) {
+    if (!pendingIngestion || extractingRace) return;
+
+    setExtractingRace(true);
+
+    try {
+      const res = await fetch("/api/ingest/extract", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pending_document_id: pendingIngestion.pending_document_id,
+          race_index: raceIndex,
+        }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+
+      // Update pending state with new races_extracted / races_pending
+      setPendingIngestion((prev) => {
+        if (!prev) return null;
+        const newExtracted: number[] = data.races_extracted ?? [...prev.races_extracted, raceIndex];
+        const newPending: number[] = data.races_pending ?? prev.races_pending.filter((r) => r !== raceIndex);
+        if (newPending.length === 0) return null; // all races done
+        return { ...prev, races_extracted: newExtracted, races_pending: newPending };
+      });
+
+      // Inject feedback message into chat
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: data.message ?? (data.status === "failed"
+            ? `We couldn't process race ${raceIndex}. Please try again.`
+            : `Race ${raceIndex} extracted.`),
+        },
+      ]);
+
+      await fetchDocuments();
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: `There was an error extracting race ${raceIndex}: ${err instanceof Error ? err.message : "Unknown error"}. Please try again.`,
+        },
+      ]);
+    } finally {
+      setExtractingRace(false);
     }
   }
 
@@ -427,7 +552,7 @@ export default function BrainPage() {
             {/* Upload button */}
             <button
               onClick={() => fileInputRef.current?.click()}
-              disabled={uploadStatus === "uploading"}
+              disabled={uploadStatus === "uploading" || uploadStatus === "scanning"}
               className="flex items-center gap-1.5 text-charcoal/60 hover:text-gold dark:text-cream/60 dark:hover:text-gold text-sm font-medium border border-charcoal/10 hover:border-gold/40 dark:border-cream/10 dark:hover:border-gold/40 rounded-lg px-3 py-2 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
               title="Upload PDF to Brain"
             >
@@ -438,6 +563,14 @@ export default function BrainPage() {
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
                   </svg>
                   Uploading…
+                </>
+              ) : uploadStatus === "scanning" ? (
+                <>
+                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
+                  </svg>
+                  Scanning…
                 </>
               ) : uploadStatus === "done" ? (
                 <>
@@ -567,6 +700,52 @@ export default function BrainPage() {
               </div>
             </div>
           )}
+
+          {/* Race selector — shown after document scan, until all races extracted or dismissed */}
+          {pendingIngestion && pendingIngestion.races_pending.length > 0 && (
+            <div className="flex items-end gap-3 mb-4">
+              <div className="w-8 h-8 rounded-full bg-gold/20 border border-gold/40 flex items-center justify-center flex-shrink-0">
+                <span className="text-sm">🐝</span>
+              </div>
+              <div className="bg-[#EDE9E1] dark:bg-[#1c1c1c] border border-gold/15 rounded-2xl rounded-bl-sm px-4 py-3 shadow-md">
+                <p className="text-xs text-charcoal/50 dark:text-cream/50 mb-2 font-medium">
+                  {pendingIngestion.races_extracted.length > 0
+                    ? `${pendingIngestion.races_extracted.length} of ${pendingIngestion.total_races} extracted — pick another race:`
+                    : "Select a race to extract:"}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {pendingIngestion.races_pending.map((raceIndex) => (
+                    <button
+                      key={raceIndex}
+                      onClick={() => handleExtractRace(raceIndex)}
+                      disabled={extractingRace}
+                      className="bg-gold/10 border border-gold/30 hover:bg-gold/20 hover:border-gold/50 text-charcoal dark:text-cream text-xs font-medium rounded-lg px-3 py-1.5 transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {extractingRace ? (
+                        <span className="flex items-center gap-1">
+                          <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
+                          </svg>
+                          Race {raceIndex}
+                        </span>
+                      ) : (
+                        `Race ${raceIndex}`
+                      )}
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => setPendingIngestion(null)}
+                    disabled={extractingRace}
+                    className="text-charcoal/30 dark:text-cream/30 hover:text-charcoal/60 dark:hover:text-cream/60 text-xs px-2 py-1.5 transition-colors disabled:opacity-40"
+                  >
+                    Done
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div ref={messagesEndRef} />
         </div>
       </div>

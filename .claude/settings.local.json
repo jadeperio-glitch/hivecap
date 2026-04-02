@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npm run:*)",
+      "Bash(node scripts/test-racing-api.mjs)",
+      "WebSearch",
+      "WebFetch(domain:www.theracingapi.com)",
+      "WebFetch(domain:api.theracingapi.com)",
+      "WebFetch(domain:rapidapi.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:sportbex.com)",
+      "WebFetch(domain:www.racing-index.com)",
+      "WebFetch(domain:gist.github.com)",
+      "Bash(npm audit:*)",
+      "Bash(gh run:*)",
+      "Bash(gh deployment:*)",
+      "Bash(gh api:*)",
+      "Bash(xargs -I{} gh api repos/jadeperio-glitch/hivecap/deployments/{}/statuses --jq '.[0] | {state, description, updated_at}')",
+      "Bash(node -e \"const fs=require\\(''''fs''''\\); const p=JSON.parse\\(fs.readFileSync\\(''''/dev/stdin'''',''''utf8''''\\)\\); console.log\\(JSON.stringify\\({main:p.main,exports:p.exports,version:p.version},null,2\\)\\)\")",
+      "Bash(npm uninstall:*)",
+      "Bash(node -e \"const d=require\\(''''fs''''\\).readFileSync\\(0,''''utf8''''\\); const p=JSON.parse\\(d\\); console.log\\(p.version, p.main, p.type||''''commonjs''''\\)\")",
+      "Bash(xargs -I{} gh api repos/jadeperio-glitch/hivecap/deployments/{}/statuses --jq '.[0] | {state, description}')",
+      "Bash(supabase --version)",
+      "Bash(node -e \"console.log\\(require\\(''./node_modules/@anthropic-ai/sdk/package.json''\\).version\\)\")",
+      "Bash(node -e \":*)"
+    ]
+  }
+}

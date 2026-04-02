@@ -130,16 +130,17 @@ export async function POST(request: Request) {
         if (docsErr) {
           console.error("[brain] user documents failed:", docsErr.message, "| code:", docsErr.code);
         } else if (docs && docs.length > 0) {
-          const DOC_MAX = 3000;
+          const DOC_TOTAL_BUDGET = 40000;
+          const charsPerDoc = Math.floor(DOC_TOTAL_BUDGET / docs.length);
           documentContext = docs
             .map((d) => {
-              const text = d.extracted_text.length > DOC_MAX
-                ? d.extracted_text.slice(0, DOC_MAX) + "…"
+              const text = d.extracted_text.length > charsPerDoc
+                ? d.extracted_text.slice(0, charsPerDoc) + "…"
                 : d.extracted_text;
               return `--- Document: ${d.filename} ---\n${text}`;
             })
             .join("\n\n");
-          console.log("[brain] loaded user documents:", docs.length, "| doc context chars:", documentContext.length);
+          console.log("[brain] loaded user documents:", docs.length, "| chars per doc:", charsPerDoc, "| doc context chars:", documentContext.length);
         } else {
           console.log("[brain] no user documents found");
         }
