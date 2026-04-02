@@ -15,10 +15,227 @@ const BASE_PROMPT = `You are the HiveCap Brain — an expert horse racing analys
 
 You synthesize and analyze information from your training data. You never reproduce copyrighted content verbatim — you always analyze, summarize, and provide original insights. You are precise, confident, and data-driven. When discussing horses, lead with the most analytically relevant factors.`;
 
+const GROUNDING_INSTRUCTION = `DATA GROUNDING RULE:
+You have been provided with structured racing data extracted from documents the user has uploaded. This is your PRIMARY and ONLY source for specific horse and race facts.
+- Discuss ONLY the horses and races present in the Brain Knowledge Base section below.
+- If asked about a horse or race that is NOT listed there, say clearly: "I don't have extracted data for [horse/race]. Upload a past performance sheet or result chart to add it to the Brain."
+- Do NOT fill gaps with general training knowledge about specific horses, their real-world records, or race results outside the provided data.
+- Community Intelligence posts are supplementary context only — defer to the extracted Knowledge Base when there is any conflict.`;
+
+const NO_DATA_INSTRUCTION = `DATA NOTE: No structured racing data has been extracted yet. You can answer questions about horse racing strategy, handicapping methodology, and general analysis. For questions about specific horses or races, ask the user to upload a past performance sheet or result chart.`;
+
 const DOCUMENT_INSTRUCTION =
   "You have access to documents uploaded by the user. Extract and reason from the data within them but never reproduce source text verbatim. All answers must be derivative analysis only.";
 
 export const runtime = "nodejs";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Extract candidate horse/track name terms from the user query.
+// Matches sequences of 1–4 capitalized words, skips common stop words.
+// ─────────────────────────────────────────────────────────────────────────────
+function extractQueryTerms(query: string): string[] {
+  if (!query) return [];
+
+  const stopWords = new Set([
+    "the", "a", "an", "is", "are", "was", "were", "has", "have", "had",
+    "will", "can", "does", "do", "did", "not", "but", "and", "or", "for",
+    "on", "in", "at", "by", "with", "what", "how", "why", "when", "where",
+    "who", "which", "this", "that", "these", "those", "about", "tell", "me",
+    "show", "give", "find", "get", "his", "her", "its", "our", "their", "your",
+    "race", "horse", "track", "ran", "run", "won", "win", "lost", "finish",
+  ]);
+
+  const terms: string[] = [];
+  const seen = new Set<string>();
+
+  const matches = query.matchAll(/\b([A-Z][a-zA-Z']+(?:\s+[A-Z][a-zA-Z']+){0,3})\b/g);
+  for (const m of matches) {
+    const term = m[1].trim();
+    const lower = term.toLowerCase();
+    if (term.length >= 3 && !stopWords.has(lower) && !seen.has(lower)) {
+      terms.push(term);
+      seen.add(lower);
+    }
+  }
+
+  return terms.slice(0, 5);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Build structured context from horses/races/performance/connections tables.
+// Returns empty string if no data found (triggers user_documents fallback).
+// ─────────────────────────────────────────────────────────────────────────────
+async function buildSchemaContext(
+  userId: string,
+  userQuery: string,
+  admin: ReturnType<typeof createAdminClient>,
+): Promise<string> {
+  const terms = extractQueryTerms(userQuery);
+
+  // Fetch horses uploaded by this user (most recent 15)
+  const { data: ownHorses } = await admin
+    .from("horses")
+    .select("id, name, sire, dam, dam_sire, trainer, jockey, owner, age, sex, notes")
+    .eq("uploaded_by", userId)
+    .order("created_at", { ascending: false })
+    .limit(15);
+
+  // Additionally search by name terms from the query
+  const termMatches: NonNullable<typeof ownHorses> = [];
+  for (const term of terms.slice(0, 4)) {
+    const { data } = await admin
+      .from("horses")
+      .select("id, name, sire, dam, dam_sire, trainer, jockey, owner, age, sex, notes")
+      .ilike("name", `%${term}%`)
+      .limit(5);
+    if (data) termMatches.push(...data);
+  }
+
+  // Merge and dedup by id
+  const seen = new Set<string>();
+  const horses = [...(ownHorses ?? []), ...termMatches].filter((h) => {
+    if (seen.has(h.id)) return false;
+    seen.add(h.id);
+    return true;
+  });
+
+  if (horses.length === 0) return "";
+
+  const lines: string[] = [
+    "--- Brain Knowledge Base — Extracted Racing Data ---",
+    "",
+  ];
+
+  for (const horse of horses.slice(0, 15)) {
+    const header = [
+      `HORSE: ${horse.name}`,
+      horse.sex ? `(${horse.sex})` : null,
+      horse.age ? `Age ${horse.age}` : null,
+    ].filter(Boolean).join(" ");
+    lines.push(header);
+
+    const breeding = [
+      horse.sire ? `Sire: ${horse.sire}` : null,
+      horse.dam ? `Dam: ${horse.dam}` : null,
+      horse.dam_sire ? `Dam Sire: ${horse.dam_sire}` : null,
+    ].filter(Boolean).join(" | ");
+    if (breeding) lines.push(`  Breeding: ${breeding}`);
+
+    const connections = [
+      horse.trainer ? `Trainer: ${horse.trainer}` : null,
+      horse.jockey ? `Jockey: ${horse.jockey}` : null,
+      horse.owner ? `Owner: ${horse.owner}` : null,
+    ].filter(Boolean).join(" | ");
+    if (connections) lines.push(`  Connections: ${connections}`);
+
+    if (horse.notes) lines.push(`  Notes: ${horse.notes}`);
+
+    // Performance records with race + track context
+    const { data: perfs } = await admin
+      .from("performance")
+      .select(`
+        finish_position, lengths_beaten,
+        beyer_figure, beyer_source,
+        equibase_speed_fig, equibase_source,
+        timeform_rating, timeform_source,
+        final_time, running_style, weight_carried, odds,
+        trip_notes, trouble_line,
+        races (
+          race_date, race_number, distance, surface, condition, class_level, purse,
+          tracks ( name, abbreviation )
+        )
+      `)
+      .eq("horse_id", horse.id)
+      .limit(8);
+
+    if (perfs && perfs.length > 0) {
+      // Sort by race_date descending client-side
+      const sorted = [...perfs]
+        .sort((a, b) => {
+          const da = (a.races as { race_date?: string } | null)?.race_date ?? "";
+          const db = (b.races as { race_date?: string } | null)?.race_date ?? "";
+          return db.localeCompare(da);
+        })
+        .slice(0, 5);
+
+      lines.push("  Performance:");
+      for (const p of sorted) {
+        const race = p.races as {
+          race_date?: string; race_number?: number; distance?: string;
+          surface?: string; condition?: string; class_level?: string; purse?: number;
+          tracks?: { name?: string; abbreviation?: string } | null;
+        } | null;
+        const track = race?.tracks;
+        const trackName = track?.name ?? track?.abbreviation ?? "Unknown";
+
+        const raceHeader = [
+          race?.race_date,
+          trackName,
+          race?.race_number != null ? `Race ${race.race_number}` : null,
+          race?.class_level,
+          [race?.distance, race?.surface].filter(Boolean).join(" "),
+          race?.condition ? `(${race.condition})` : null,
+        ].filter(Boolean).join(" · ");
+        lines.push(`    ${raceHeader}`);
+
+        const result = [
+          p.finish_position != null ? `Finish: ${p.finish_position}` : null,
+          p.lengths_beaten != null ? `Margin: ${p.lengths_beaten}L` : null,
+          p.beyer_figure != null
+            ? `Beyer: ${p.beyer_figure}${p.beyer_source ? ` (${p.beyer_source})` : ""}`
+            : null,
+          p.equibase_speed_fig != null
+            ? `EQ: ${p.equibase_speed_fig}${p.equibase_source ? ` (${p.equibase_source})` : ""}`
+            : null,
+          p.timeform_rating != null
+            ? `TF: ${p.timeform_rating}${p.timeform_source ? ` (${p.timeform_source})` : ""}`
+            : null,
+          p.final_time ? `Final: ${p.final_time}` : null,
+          p.running_style ? `Style: ${p.running_style}` : null,
+          p.weight_carried != null ? `Wt: ${p.weight_carried}` : null,
+          p.odds != null ? `Odds: ${p.odds}` : null,
+        ].filter(Boolean).join(" | ");
+        if (result) lines.push(`    ${result}`);
+        if (p.trip_notes) lines.push(`    Trip: ${p.trip_notes}`);
+        if (p.trouble_line) lines.push(`    Trouble: ${p.trouble_line}`);
+      }
+    } else {
+      lines.push("  No performance records extracted.");
+    }
+
+    lines.push("");
+  }
+
+  // Connections stats for all trainers/jockeys in the result set
+  const trainerNames = [...new Set(horses.map((h) => h.trainer).filter((n): n is string => !!n))];
+  const jockeyNames = [...new Set(horses.map((h) => h.jockey).filter((n): n is string => !!n))];
+  const allConnNames = [...trainerNames.slice(0, 5), ...jockeyNames.slice(0, 5)];
+
+  if (allConnNames.length > 0) {
+    const { data: conns } = await admin
+      .from("connections")
+      .select("name, role, win_pct, itm_pct, roi, specialty_distance, specialty_surface, notes")
+      .in("name", allConnNames);
+
+    if (conns && conns.length > 0) {
+      lines.push("CONNECTIONS:");
+      for (const c of conns) {
+        const stats = [
+          c.win_pct != null ? `Win: ${c.win_pct}%` : null,
+          c.itm_pct != null ? `ITM: ${c.itm_pct}%` : null,
+          c.roi != null ? `ROI: ${c.roi}` : null,
+          c.specialty_distance ? `Dist: ${c.specialty_distance}` : null,
+          c.specialty_surface ? `Surface: ${c.specialty_surface}` : null,
+        ].filter(Boolean).join(" | ");
+        lines.push(`  ${c.name} (${c.role})${stats ? ` — ${stats}` : ""}`);
+        if (c.notes) lines.push(`    ${c.notes}`);
+      }
+      lines.push("");
+    }
+  }
+
+  return lines.join("\n");
+}
 
 export async function POST(request: Request) {
   // ── Startup env checks ──────────────────────────────────────────────────────
@@ -52,13 +269,11 @@ export async function POST(request: Request) {
 
     console.log("[brain] messages count:", messages.length, "| conversation_id:", conversation_id ?? "none");
 
+    const admin = createAdminClient();
+
     // ── Shared community intelligence (Rule D) ─────────────────────────────────
-    // Fetch the 20 most recent brain_verified posts regardless of which user is
-    // asking. Uses admin client to read across user rows without RLS interference.
-    // Gracefully degrades — failure here never blocks the Brain response.
     let sharedIntelligenceContext = "";
     try {
-      const admin = createAdminClient();
       const { data: sharedPosts, error: sharedErr } = await admin
         .from("posts")
         .select("username, user_email, content, created_at")
@@ -82,22 +297,18 @@ export async function POST(request: Request) {
           `--- Community Intelligence — publicly shared findings from HiveCap users ---\n` +
           `The following posts were verified by the Brain and shared by the community. ` +
           `Treat them as supplementary analyst notes — useful signal, but defer to the ` +
-          `user's personal documents and your own analysis when they conflict.\n\n` +
+          `extracted Knowledge Base and the user's own analysis when they conflict.\n\n` +
           entries;
         console.log("[brain] loaded shared community posts:", sharedPosts.length);
       }
     } catch (err) {
       const e = err as Error & { cause?: unknown };
       console.error("[brain] community posts failed:", e?.message);
-      console.error("[brain] community posts stack:", e?.stack);
       if (e?.cause) console.error("[brain] community posts cause:", e.cause);
     }
 
     // ── Auth ───────────────────────────────────────────────────────────────────
-    // Gracefully degrades — if auth fails, Brain still works without doc context.
-    let documentContext = "";
     let userId: string | null = null;
-
     try {
       const supabase = createClient();
       const { data: { user }, error: authErr } = await supabase.auth.getUser();
@@ -112,47 +323,60 @@ export async function POST(request: Request) {
     } catch (err) {
       const e = err as Error & { cause?: unknown };
       console.error("[brain] auth threw:", e?.message);
-      console.error("[brain] auth stack:", e?.stack);
       if (e?.cause) console.error("[brain] auth cause:", e.cause);
     }
 
-    // ── User documents ─────────────────────────────────────────────────────────
+    // ── Schema context (primary knowledge source) ─────────────────────────────
+    // Query horses/races/performance/connections for this user.
+    // Falls back to user_documents if schema returns no results.
+    let schemaContext = "";
+    let documentContext = "";
+
     if (userId) {
       try {
-        const supabase = createClient();
-        const { data: docs, error: docsErr } = await supabase
-          .from("user_documents")
-          .select("filename, extracted_text")
-          .eq("user_id", userId)
-          .order("created_at", { ascending: false })
-          .limit(5);
-
-        if (docsErr) {
-          console.error("[brain] user documents failed:", docsErr.message, "| code:", docsErr.code);
-        } else if (docs && docs.length > 0) {
-          const DOC_TOTAL_BUDGET = 40000;
-          const charsPerDoc = Math.floor(DOC_TOTAL_BUDGET / docs.length);
-          documentContext = docs
-            .map((d) => {
-              const text = d.extracted_text.length > charsPerDoc
-                ? d.extracted_text.slice(0, charsPerDoc) + "…"
-                : d.extracted_text;
-              return `--- Document: ${d.filename} ---\n${text}`;
-            })
-            .join("\n\n");
-          console.log("[brain] loaded user documents:", docs.length, "| chars per doc:", charsPerDoc, "| doc context chars:", documentContext.length);
-        } else {
-          console.log("[brain] no user documents found");
-        }
+        schemaContext = await buildSchemaContext(userId, user_message ?? "", admin);
+        console.log("[brain] schema context chars:", schemaContext.length, "| horses found:", schemaContext ? "yes" : "none");
       } catch (err) {
-        const e = err as Error & { cause?: unknown };
-        console.error("[brain] user documents threw:", e?.message);
-        console.error("[brain] user documents stack:", e?.stack);
-        if (e?.cause) console.error("[brain] user documents cause:", e.cause);
+        console.error("[brain] schema context query failed:", (err as Error).message);
+      }
+
+      // ── user_documents fallback (only if schema returned nothing) ─────────────
+      if (!schemaContext) {
+        try {
+          const supabase = createClient();
+          const { data: docs, error: docsErr } = await supabase
+            .from("user_documents")
+            .select("filename, extracted_text")
+            .eq("user_id", userId)
+            .order("created_at", { ascending: false })
+            .limit(5);
+
+          if (docsErr) {
+            console.error("[brain] user documents failed:", docsErr.message, "| code:", docsErr.code);
+          } else if (docs && docs.length > 0) {
+            const DOC_TOTAL_BUDGET = 40000;
+            const charsPerDoc = Math.floor(DOC_TOTAL_BUDGET / docs.length);
+            documentContext = docs
+              .map((d) => {
+                const text = d.extracted_text.length > charsPerDoc
+                  ? d.extracted_text.slice(0, charsPerDoc) + "…"
+                  : d.extracted_text;
+                return `--- Document: ${d.filename} ---\n${text}`;
+              })
+              .join("\n\n");
+            console.log("[brain] schema empty — loaded user_documents fallback:", docs.length, "docs");
+          } else {
+            console.log("[brain] no schema data and no user documents found");
+          }
+        } catch (err) {
+          const e = err as Error & { cause?: unknown };
+          console.error("[brain] user documents threw:", e?.message);
+          if (e?.cause) console.error("[brain] user documents cause:", e.cause);
+        }
       }
     }
 
-    // ── Resolve conversation (server creates if client didn't supply one) ───────
+    // ── Resolve conversation ───────────────────────────────────────────────────
     let activeConvId: string | null = conversation_id ?? null;
 
     if (userId) {
@@ -194,20 +418,26 @@ export async function POST(request: Request) {
     }
 
     // ── Build system prompt ────────────────────────────────────────────────────
-    // Order: base → shared community intel → personal documents (personal takes priority)
+    // Order: base persona → grounding rule + schema → community intel → fallback docs
     const contextParts: string[] = [BASE_PROMPT];
-    if (sharedIntelligenceContext) {
-      contextParts.push(sharedIntelligenceContext);
-    }
-    if (documentContext) {
+
+    if (schemaContext) {
+      contextParts.push(GROUNDING_INSTRUCTION);
+      contextParts.push(schemaContext);
+    } else if (documentContext) {
       contextParts.push(
         `--- Personal Documents — uploaded by this user (higher priority than community posts) ---\n` +
         documentContext
       );
       contextParts.push(DOCUMENT_INSTRUCTION);
     } else {
-      contextParts.push(DOCUMENT_INSTRUCTION);
+      contextParts.push(NO_DATA_INSTRUCTION);
     }
+
+    if (sharedIntelligenceContext) {
+      contextParts.push(sharedIntelligenceContext);
+    }
+
     const systemPrompt = contextParts.join("\n\n");
 
     // ── Validate and trim message list ────────────────────────────────────────
@@ -234,11 +464,8 @@ export async function POST(request: Request) {
     }
 
     // ── Stream ─────────────────────────────────────────────────────────────────
-    // Use messages.create({ stream: true }) — this is a real Promise that fires
-    // the HTTP request immediately, so auth/quota errors surface here (before
-    // the Response is returned) rather than silently inside ReadableStream.start().
     const model = "claude-sonnet-4-5";
-    console.log("[brain] prompt budget — system:", systemPrompt.length, "chars | community:", sharedIntelligenceContext.length, "chars | docs:", documentContext.length, "chars | messages:", anthropicMessages.length);
+    console.log("[brain] prompt budget — system:", systemPrompt.length, "chars | schema:", schemaContext.length, "chars | community:", sharedIntelligenceContext.length, "chars | docs:", documentContext.length, "chars | messages:", anthropicMessages.length);
 
     let stream: AsyncIterable<{ type: string; delta?: { type: string; text?: string } }>;
     try {
@@ -288,7 +515,6 @@ export async function POST(request: Request) {
           const e = err as Error & { status?: number; cause?: unknown };
           console.error("[brain] anthropic stream failed:", e?.message);
           console.error("[brain] anthropic stream status:", e?.status);
-          console.error("[brain] anthropic stream stack:", e?.stack);
           if (e?.cause) console.error("[brain] anthropic stream cause:", e.cause);
           controller.error(err);
         }
@@ -327,7 +553,6 @@ export async function POST(request: Request) {
         "Content-Type": "text/plain; charset=utf-8",
         "Transfer-Encoding": "chunked",
         "X-Content-Type-Options": "nosniff",
-        // Send the resolved conversation_id back so the client can store it
         ...(activeConvId ? { "X-Conversation-Id": activeConvId } : {}),
       },
     });
@@ -341,7 +566,6 @@ export async function POST(request: Request) {
     console.error("  cause:", e?.cause);
     console.error("  error body:", JSON.stringify(e?.error ?? null));
     console.error("  stack:", e?.stack);
-    console.error("  raw:", error);
     const message = e?.message ?? "Internal server error";
     return new Response(JSON.stringify({ error: message }), {
       status: 500,
