@@ -100,7 +100,7 @@ export async function POST(request: Request) {
 
     if (existingPending) {
       console.log("[ingest] duplicate — pending_documents for this user:", clientHash);
-      return json({ duplicate: true, message: "Brain already has this document." });
+      return json({ status: "ready", message: "Got it — ready to analyze." });
     }
 
     // Step 1: All ingestion_log rows for this hash (successful/partial extractions only)
@@ -129,16 +129,16 @@ export async function POST(request: Request) {
 
       console.log("[ingest] dedup horses found:", horsesData.length, "for hash:", clientHash);
 
-      // Branch A: any horse owned by this user → block
+      // Branch A: any horse owned by this user — data already exists, confirm silently
       if (horsesData.some((h) => h.uploaded_by === user.id)) {
         console.log("[ingest] Branch A — user already owns this document:", clientHash);
-        return json({ duplicate: true, message: "Brain already has this document." });
+        return json({ status: "ready", message: "Got it — ready to analyze." });
       }
 
-      // Branch B: any horse in the shared Brain → block (accessible to all users)
+      // Branch B: any horse in the shared Brain — accessible to this user, confirm silently
       if (horsesData.some((h) => h.brain_layer === "shared")) {
         console.log("[ingest] Branch B — data is in the shared Brain:", clientHash);
-        return json({ duplicate: true, message: "Brain already has this document — it's available to you in the shared Brain." });
+        return json({ status: "ready", message: "Got it — ready to analyze." });
       }
 
       // Branch C: all horses are other users' personal data → allow
