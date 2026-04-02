@@ -69,35 +69,46 @@ async function buildSchemaContext(
   admin: ReturnType<typeof createAdminClient>,
 ): Promise<string> {
   const terms = extractQueryTerms(userQuery);
+  console.log("[brain/schema] userId:", userId, "| query terms:", terms);
 
-  // Fetch horses uploaded by this user (most recent 15)
-  const { data: ownHorses } = await admin
+  // Fetch all horses owned by this user OR in the shared Brain (up to 50).
+  // This is the baseline — ensures the Brain always has context for the user's
+  // own data even when the query contains no exact horse name.
+  const { data: ownHorses, error: ownErr } = await admin
     .from("horses")
     .select("id, name, sire, dam, dam_sire, trainer, jockey, owner, age, sex, notes")
-    .eq("uploaded_by", userId)
+    .or(`uploaded_by.eq.${userId},brain_layer.eq.shared`)
     .order("created_at", { ascending: false })
-    .limit(15);
+    .limit(50);
 
-  // Additionally search by name terms from the query.
+  if (ownErr) console.error("[brain/schema] ownHorses query error:", ownErr.message);
+  console.log("[brain/schema] ownHorses rows:", ownHorses?.length ?? 0);
+
+  // Term-match search: additionally prioritise horses whose name matches query terms.
   // Scoped to this user's horses OR shared Brain horses — never other users' personal data.
   const termMatches: NonNullable<typeof ownHorses> = [];
-  for (const term of terms.slice(0, 4)) {
-    const { data } = await admin
-      .from("horses")
-      .select("id, name, sire, dam, dam_sire, trainer, jockey, owner, age, sex, notes")
-      .ilike("name", `%${term}%`)
-      .or(`brain_layer.eq.shared,uploaded_by.eq.${userId}`)
-      .limit(5);
-    if (data) termMatches.push(...data);
+  if (terms.length > 0) {
+    for (const term of terms.slice(0, 4)) {
+      const { data } = await admin
+        .from("horses")
+        .select("id, name, sire, dam, dam_sire, trainer, jockey, owner, age, sex, notes")
+        .ilike("name", `%${term}%`)
+        .or(`brain_layer.eq.shared,uploaded_by.eq.${userId}`)
+        .limit(5);
+      if (data) termMatches.push(...data);
+    }
+    console.log("[brain/schema] termMatches rows:", termMatches.length);
   }
 
-  // Merge and dedup by id
+  // Merge: term matches first (higher relevance), then own/shared baseline; dedup by id
   const seen = new Set<string>();
-  const horses = [...(ownHorses ?? []), ...termMatches].filter((h) => {
+  const horses = [...termMatches, ...(ownHorses ?? [])].filter((h) => {
     if (seen.has(h.id)) return false;
     seen.add(h.id);
     return true;
   });
+
+  console.log("[brain/schema] merged horse count:", horses.length);
 
   if (horses.length === 0) return "";
 
@@ -331,7 +342,7 @@ export async function POST(request: Request) {
     if (userId) {
       try {
         schemaContext = await buildSchemaContext(userId, user_message ?? "", admin);
-        console.log("[brain] schema context chars:", schemaContext.length);
+        console.log("[brain] final schema context chars:", schemaContext.length, "| gate will", schemaContext ? "PASS — calling Claude" : "BLOCK — returning no-data response");
       } catch (err) {
         console.error("[brain] schema context query failed:", (err as Error).message);
       }
