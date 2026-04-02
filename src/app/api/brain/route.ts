@@ -22,7 +22,8 @@ const NO_DATA_RESPONSE =
 // Injected into the system prompt only when context IS present.
 const CONTEXT_INSTRUCTION =
   "Answer only from the data in the Brain Knowledge Base section above. " +
-  "If something is not in that data, say: \"I don't have that specific information in your Brain.\"";
+  "If the answer is not in that data, say: \"I don't have that specific information in your Brain.\" " +
+  "Do not speculate. Do not use general knowledge. Do not invent horses, odds, figures, positions, or race details under any circumstances.";
 
 export const runtime = "nodejs";
 
@@ -77,13 +78,15 @@ async function buildSchemaContext(
     .order("created_at", { ascending: false })
     .limit(15);
 
-  // Additionally search by name terms from the query
+  // Additionally search by name terms from the query.
+  // Scoped to this user's horses OR shared Brain horses — never other users' personal data.
   const termMatches: NonNullable<typeof ownHorses> = [];
   for (const term of terms.slice(0, 4)) {
     const { data } = await admin
       .from("horses")
       .select("id, name, sire, dam, dam_sire, trainer, jockey, owner, age, sex, notes")
       .ilike("name", `%${term}%`)
+      .or(`brain_layer.eq.shared,uploaded_by.eq.${userId}`)
       .limit(5);
     if (data) termMatches.push(...data);
   }

@@ -80,17 +80,16 @@ export async function POST(request: Request) {
 
     const admin = createAdminClient();
 
-    // ── Step 2a: Hash dedup check ─────────────────────────────────────────────
-    // Ownership-aware dedup across three cases:
+    // ── Step 2a: Hash dedup check — three-branch ownership logic ─────────────
+    // No FK joins. Two explicit sequential queries: ingestion_log → horses.
     //
-    // A) pending_documents for THIS user → block (extraction already in progress)
-    // B) ingestion_log where user_id = THIS user → block (user already owns this data)
-    // C) ingestion_log where user_id != THIS user:
-    //    - brain_layer = 'shared' → block (data is accessible to all users via shared Brain)
-    //    - brain_layer = 'personal' or null → ALLOW (other user's private data; this user needs their own copy)
+    // Branch A: horse uploaded_by = current_user → block (user already owns this data)
+    // Branch B: horse brain_layer = 'shared'     → block (accessible via shared Brain)
+    // Branch C: all horses are other users' personal data → allow (user needs their own copy)
     console.log("[ingest] checking dedup for hash:", clientHash, "| user:", user.id);
 
-    // A) Same user already has this in their pending pipeline
+    // Pre-check: same user already has this in their pending pipeline (scan in progress,
+    // no ingestion_log entry yet)
     const { data: existingPending } = await admin
       .from("pending_documents")
       .select("id")
@@ -100,58 +99,50 @@ export async function POST(request: Request) {
       .maybeSingle();
 
     if (existingPending) {
-      console.log("[ingest] duplicate — pending_documents record owned by this user:", clientHash);
+      console.log("[ingest] duplicate — pending_documents for this user:", clientHash);
       return json({ duplicate: true, message: "Brain already has this document." });
     }
 
-    // B) Same user already completed extraction — check user_id directly
-    const { data: ownLog } = await admin
-      .from("ingestion_log")
-      .select("id")
-      .eq("pdf_hash", clientHash)
-      .eq("user_id", user.id)
-      .in("status", ["success", "partial"])
-      .limit(1)
-      .maybeSingle();
-
-    if (ownLog) {
-      console.log("[ingest] duplicate — ingestion_log record owned by this user:", clientHash);
-      return json({ duplicate: true, message: "Brain already has this document." });
-    }
-
-    // C) Another user extracted this doc — block only if it reached the shared Brain.
-    // Two-step: get horse_ids from the log, then query horses directly for brain_layer.
-    // Avoids nested join which can silently return null and produce wrong results.
-    const { data: otherLogs } = await admin
+    // Step 1: All ingestion_log rows for this hash (successful/partial extractions only)
+    const { data: logRows } = await admin
       .from("ingestion_log")
       .select("user_id, horse_id")
-      .neq("user_id", user.id)
       .eq("pdf_hash", clientHash)
       .in("status", ["success", "partial"])
-      .not("horse_id", "is", null)
-      .limit(10);
+      .limit(20);
 
-    if (otherLogs && otherLogs.length > 0) {
-      const horseIds = [...new Set(otherLogs.map((r) => r.horse_id).filter(Boolean))] as string[];
-      console.log("[ingest] hash found in other users' logs — checking brain_layer for horse_ids:", horseIds);
+    if (logRows && logRows.length > 0) {
+      // Step 2: Collect distinct horse_ids from those rows
+      const horseIds = [
+        ...new Set(logRows.map((r) => r.horse_id).filter((id): id is string => !!id)),
+      ];
 
+      // Step 3: Query horses directly for uploaded_by + brain_layer (no FK join)
+      let horsesData: Array<{ id: string; uploaded_by: string | null; brain_layer: string | null }> = [];
       if (horseIds.length > 0) {
-        const { data: sharedHorse } = await admin
+        const { data: result } = await admin
           .from("horses")
-          .select("id")
-          .in("id", horseIds)
-          .eq("brain_layer", "shared")
-          .limit(1)
-          .maybeSingle();
-
-        if (sharedHorse) {
-          console.log("[ingest] duplicate — data is in shared Brain, accessible to this user:", clientHash);
-          return json({ duplicate: true, message: "Brain already has this document." });
-        }
+          .select("id, uploaded_by, brain_layer")
+          .in("id", horseIds);
+        horsesData = result ?? [];
       }
 
-      // All matching records are other users' personal data — allow this upload
-      console.log("[ingest] hash exists only in other users' personal Brain — allowing upload:", clientHash);
+      console.log("[ingest] dedup horses found:", horsesData.length, "for hash:", clientHash);
+
+      // Branch A: any horse owned by this user → block
+      if (horsesData.some((h) => h.uploaded_by === user.id)) {
+        console.log("[ingest] Branch A — user already owns this document:", clientHash);
+        return json({ duplicate: true, message: "Brain already has this document." });
+      }
+
+      // Branch B: any horse in the shared Brain → block (accessible to all users)
+      if (horsesData.some((h) => h.brain_layer === "shared")) {
+        console.log("[ingest] Branch B — data is in the shared Brain:", clientHash);
+        return json({ duplicate: true, message: "Brain already has this document — it's available to you in the shared Brain." });
+      }
+
+      // Branch C: all horses are other users' personal data → allow
+      console.log("[ingest] Branch C — all matches are other users' personal data, allowing upload:", clientHash);
     }
 
     // ── Extract text from PDF ─────────────────────────────────────────────────
