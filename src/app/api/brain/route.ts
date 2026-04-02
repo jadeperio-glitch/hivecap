@@ -19,6 +19,21 @@ You never reproduce copyrighted content verbatim — you always analyze, summari
 const NO_DATA_RESPONSE =
   "I don't have data on this in your Brain. Upload a past performance for this race or check if another user has posted analysis.";
 
+// UI state messages injected by the ingestion pipeline — never pass to Claude.
+// These are assistant turns that reflect pipeline state, not conversation content.
+const UI_STATE_PATTERNS = [
+  /^I (?:found|see) \d+/i,           // scan prompt: "I found N race(s)..."
+  /^Brain updated/i,                   // extraction confirmation
+  /^Got it/i,                          // dedup / ready confirmation
+  /Select a race to extract/i,         // race selector prompt
+  /^We couldn't process/i,             // extraction failure message
+  /^Extraction incomplete/i,           // max_tokens failure
+];
+
+function isUiStateMessage(content: string): boolean {
+  return UI_STATE_PATTERNS.some((p) => p.test(content.trimStart()));
+}
+
 // Injected into the system prompt only when context IS present.
 const CONTEXT_INSTRUCTION =
   "Answer only from the data in the Brain Knowledge Base section above. " +
@@ -70,6 +85,16 @@ async function buildSchemaContext(
 ): Promise<string> {
   const terms = extractQueryTerms(userQuery);
   console.log("[brain/schema] userId:", userId, "| query terms:", terms);
+  console.log("[brain/schema] filter: uploaded_by.eq." + userId + " OR brain_layer.eq.shared");
+
+  // Diagnostic: check how many horses exist with uploaded_by = userId specifically.
+  // This confirms whether the extract route wrote uploaded_by correctly for this user.
+  const { count: uploadedByCount, error: countErr } = await admin
+    .from("horses")
+    .select("id", { count: "exact", head: true })
+    .eq("uploaded_by", userId);
+  if (countErr) console.error("[brain/schema] uploaded_by count error:", countErr.message);
+  console.log("[brain/schema] horses with uploaded_by =", userId, ":", uploadedByCount ?? 0);
 
   // Fetch all horses owned by this user OR in the shared Brain (up to 50).
   // This is the baseline — ensures the Brain always has context for the user's
@@ -82,7 +107,10 @@ async function buildSchemaContext(
     .limit(50);
 
   if (ownErr) console.error("[brain/schema] ownHorses query error:", ownErr.message);
-  console.log("[brain/schema] ownHorses rows:", ownHorses?.length ?? 0);
+  console.log(
+    "[brain/schema] ownHorses rows:", ownHorses?.length ?? 0,
+    "| names:", ownHorses?.map((h) => h.name).join(", ") || "none",
+  );
 
   // Term-match search: additionally prioritise horses whose name matches query terms.
   // Scoped to this user's horses OR shared Brain horses — never other users' personal data.
@@ -528,6 +556,7 @@ export async function POST(request: Request) {
     // ── Validate and trim message list ────────────────────────────────────────
     const anthropicMessages = messages
       .filter((m) => m.role === "user" || m.role === "assistant")
+      .filter((m) => !(m.role === "assistant" && isUiStateMessage(m.content)))
       .slice(-10)
       .map((m) => ({
         role: m.role as "user" | "assistant",
