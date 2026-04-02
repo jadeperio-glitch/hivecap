@@ -342,7 +342,11 @@ export async function POST(request: Request) {
     const admin = createAdminClient();
 
     // ── Shared community intelligence (Rule D) ─────────────────────────────────
+    // sharedIntelligenceContext — all verified posts (used when schema is present).
+    // relevantCommunityContext  — only posts matching the user's query terms
+    //   (used for the gate check and as Claude's community input when schema is absent).
     let sharedIntelligenceContext = "";
+    let relevantCommunityContext = "";
     try {
       const { data: sharedPosts, error: sharedErr } = await admin
         .from("posts")
@@ -355,21 +359,42 @@ export async function POST(request: Request) {
         console.error("[brain] shared posts query error:", sharedErr.message);
       } else if (sharedPosts && sharedPosts.length > 0) {
         const POST_MAX = 300;
-        const entries = sharedPosts
-          .map((p) => {
-            const author = p.username ?? p.user_email;
-            const date = new Date(p.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-            const body = p.content.length > POST_MAX ? p.content.slice(0, POST_MAX) + "…" : p.content;
-            return `[${author} · ${date}]\n${body}`;
-          })
-          .join("\n\n");
-        sharedIntelligenceContext =
+        const COMMUNITY_HEADER =
           `--- Community Intelligence — publicly shared findings from HiveCap users ---\n` +
           `The following posts were verified by the Brain and shared by the community. ` +
           `Treat them as supplementary analyst notes — useful signal, but defer to the ` +
-          `extracted Knowledge Base and the user's own analysis when they conflict.\n\n` +
-          entries;
-        console.log("[brain] loaded shared community posts:", sharedPosts.length);
+          `extracted Knowledge Base and the user's own analysis when they conflict.\n\n`;
+
+        const entries = sharedPosts.map((p) => {
+          const author = p.username ?? p.user_email;
+          const date = new Date(p.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+          const body = p.content.length > POST_MAX ? p.content.slice(0, POST_MAX) + "…" : p.content;
+          return `[${author} · ${date}]\n${body}`;
+        });
+
+        sharedIntelligenceContext = COMMUNITY_HEADER + entries.join("\n\n");
+
+        // Relevance filter: only keep posts that mention terms from the user's query.
+        // Uses extractQueryTerms (capitalized names) plus a 4+ char word fallback
+        // so lowercased horse/race names in the query still match.
+        const queryTerms = extractQueryTerms(user_message ?? "");
+        const queryWords = (user_message ?? "")
+          .toLowerCase()
+          .split(/\s+/)
+          .map((w) => w.replace(/[^a-z]/g, ""))
+          .filter((w) => w.length >= 4);
+
+        const relevantEntries = entries.filter((entry) => {
+          const entryLower = entry.toLowerCase();
+          if (queryTerms.some((t) => entryLower.includes(t.toLowerCase()))) return true;
+          return queryWords.some((w) => entryLower.includes(w));
+        });
+
+        if (relevantEntries.length > 0) {
+          relevantCommunityContext = COMMUNITY_HEADER + relevantEntries.join("\n\n");
+        }
+
+        console.log("[brain] community posts — total:", sharedPosts.length, "| relevant to query:", relevantEntries.length);
       }
     } catch (err) {
       const e = err as Error & { cause?: unknown };
@@ -449,9 +474,10 @@ export async function POST(request: Request) {
     }
 
     // ── Code-level context gate ────────────────────────────────────────────────
-    // If NEITHER schema context nor shared community intelligence is present,
-    // return the fixed no-data message and stop. Claude is never called.
-    if (!schemaContext && !sharedIntelligenceContext) {
+    // Gate fires when schema is empty AND no community posts are relevant to the
+    // query. Presence of unrelated community posts does not pass the gate —
+    // relevance to the user's query is required.
+    if (!schemaContext && !relevantCommunityContext) {
       console.log("[brain] no schema context — returning no-data gate response");
 
       // Persist the gate response as an assistant message so conversation history is clean
@@ -488,10 +514,13 @@ export async function POST(request: Request) {
 
     // ── Build system prompt ────────────────────────────────────────────────────
     // Context is present — pass schema + community intel to Claude.
+    // When schema is present: include all community posts (supplementary signal).
+    // When schema is absent: include only query-relevant community posts so
+    // Claude cannot cite unrelated posts as if they answered the question.
     const contextParts: string[] = [BASE_PROMPT, schemaContext, CONTEXT_INSTRUCTION];
-
-    if (sharedIntelligenceContext) {
-      contextParts.push(sharedIntelligenceContext);
+    const communityForClaude = schemaContext ? sharedIntelligenceContext : relevantCommunityContext;
+    if (communityForClaude) {
+      contextParts.push(communityForClaude);
     }
 
     const systemPrompt = contextParts.join("\n\n");
