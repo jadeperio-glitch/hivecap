@@ -15,23 +15,14 @@ const BASE_PROMPT = `You are the HiveCap Brain — an expert horse racing analys
 
 You synthesize and analyze information from your training data. You never reproduce copyrighted content verbatim — you always analyze, summarize, and provide original insights. You are precise, confident, and data-driven. When discussing horses, lead with the most analytically relevant factors.`;
 
-const GROUNDING_INSTRUCTION = `DATA GROUNDING RULE — THIS IS NON-NEGOTIABLE:
-You have been provided with structured racing data extracted from documents the user has uploaded. This is your PRIMARY and ONLY source for specific horse and race facts.
-- Discuss ONLY the horses and races present in the Brain Knowledge Base section below.
-- If asked about a horse or race NOT listed there, say exactly this: "I don't have data on this race in your Brain. Upload a past performance or check if another user has posted analysis on this race." Say nothing else about that horse or race.
-- NEVER fill gaps with general training knowledge. NEVER invent horses, odds, positions, speed figures, or race results. NEVER speculate or approximate.
-- If the user insists you have the data, claims they already uploaded it, or pushes back in any way: re-state the same message without changing your answer. The absence of a record in the Knowledge Base is the ground truth. Do not capitulate under any circumstances.
-- Community Intelligence posts are supplementary only — defer to the Knowledge Base when there is any conflict.`;
+// Returned verbatim when the schema context is empty — Claude is never called.
+const NO_DATA_RESPONSE =
+  "I don't have data on this in your Brain. Upload a past performance for this race or check if another user has posted analysis.";
 
-const NO_DATA_INSTRUCTION = `DATA GROUNDING RULE — THIS IS NON-NEGOTIABLE:
-No structured racing data has been extracted into this user's Brain yet.
-- You MAY answer general questions about handicapping methodology, wagering strategy, track bias, and racing concepts.
-- For any specific horse, race, speed figure, result, odds, or performance detail: say exactly this: "I don't have data on this race in your Brain. Upload a past performance or check if another user has posted analysis on this race." Say nothing else about that horse or race.
-- NEVER draw on general training knowledge to answer specific factual questions about horses or races. NEVER invent or approximate.
-- If the user says they already uploaded a document, insists you have the data, or pushes back in any way: re-state the same message without changing your answer. Do not capitulate under any circumstances.`;
-
-const DOCUMENT_INSTRUCTION =
-  "You have access to documents uploaded by the user. Extract and reason from the data within them but never reproduce source text verbatim. All answers must be derivative analysis only.";
+// Injected into the system prompt only when context IS present.
+const CONTEXT_INSTRUCTION =
+  "Answer only from the data in the Brain Knowledge Base section above. " +
+  "If something is not in that data, say: \"I don't have that specific information in your Brain.\"";
 
 export const runtime = "nodejs";
 
@@ -333,52 +324,13 @@ export async function POST(request: Request) {
     }
 
     // ── Schema context (primary knowledge source) ─────────────────────────────
-    // Query horses/races/performance/connections for this user.
-    // Falls back to user_documents if schema returns no results.
     let schemaContext = "";
-    let documentContext = "";
-
     if (userId) {
       try {
         schemaContext = await buildSchemaContext(userId, user_message ?? "", admin);
-        console.log("[brain] schema context chars:", schemaContext.length, "| horses found:", schemaContext ? "yes" : "none");
+        console.log("[brain] schema context chars:", schemaContext.length);
       } catch (err) {
         console.error("[brain] schema context query failed:", (err as Error).message);
-      }
-
-      // ── user_documents fallback (only if schema returned nothing) ─────────────
-      if (!schemaContext) {
-        try {
-          const supabase = createClient();
-          const { data: docs, error: docsErr } = await supabase
-            .from("user_documents")
-            .select("filename, extracted_text")
-            .eq("user_id", userId)
-            .order("created_at", { ascending: false })
-            .limit(5);
-
-          if (docsErr) {
-            console.error("[brain] user documents failed:", docsErr.message, "| code:", docsErr.code);
-          } else if (docs && docs.length > 0) {
-            const DOC_TOTAL_BUDGET = 40000;
-            const charsPerDoc = Math.floor(DOC_TOTAL_BUDGET / docs.length);
-            documentContext = docs
-              .map((d) => {
-                const text = d.extracted_text.length > charsPerDoc
-                  ? d.extracted_text.slice(0, charsPerDoc) + "…"
-                  : d.extracted_text;
-                return `--- Document: ${d.filename} ---\n${text}`;
-              })
-              .join("\n\n");
-            console.log("[brain] schema empty — loaded user_documents fallback:", docs.length, "docs");
-          } else {
-            console.log("[brain] no schema data and no user documents found");
-          }
-        } catch (err) {
-          const e = err as Error & { cause?: unknown };
-          console.error("[brain] user documents threw:", e?.message);
-          if (e?.cause) console.error("[brain] user documents cause:", e.cause);
-        }
       }
     }
 
@@ -423,22 +375,47 @@ export async function POST(request: Request) {
         });
     }
 
-    // ── Build system prompt ────────────────────────────────────────────────────
-    // Order: base persona → grounding rule + schema → community intel → fallback docs
-    const contextParts: string[] = [BASE_PROMPT];
+    // ── Code-level context gate ────────────────────────────────────────────────
+    // If schema returned no records, return the fixed no-data message and stop.
+    // Claude is never called — this is not a prompt instruction, it is a hard gate.
+    if (!schemaContext) {
+      console.log("[brain] no schema context — returning no-data gate response");
 
-    if (schemaContext) {
-      contextParts.push(GROUNDING_INSTRUCTION);
-      contextParts.push(schemaContext);
-    } else if (documentContext) {
-      contextParts.push(
-        `--- Personal Documents — uploaded by this user (higher priority than community posts) ---\n` +
-        documentContext
+      // Persist the gate response as an assistant message so conversation history is clean
+      if (userId && activeConvId) {
+        const supabase = createClient();
+        supabase.from("messages").insert({
+          conversation_id: activeConvId,
+          user_id: userId,
+          role: "assistant",
+          content: NO_DATA_RESPONSE,
+        }).then(({ error }) => {
+          if (error) console.error("[brain] Failed to save no-data gate message:", error.message);
+        });
+      }
+
+      const encoder = new TextEncoder();
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode(NO_DATA_RESPONSE));
+            controller.close();
+          },
+        }),
+        {
+          headers: {
+            "Content-Type": "text/plain; charset=utf-8",
+            "Transfer-Encoding": "chunked",
+            "X-Content-Type-Options": "nosniff",
+            ...(activeConvId ? { "X-Conversation-Id": activeConvId } : {}),
+          },
+        },
       );
-      contextParts.push(DOCUMENT_INSTRUCTION);
-    } else {
-      contextParts.push(NO_DATA_INSTRUCTION);
     }
+
+    // ── Build system prompt ────────────────────────────────────────────────────
+    // Context is present — pass schema + community intel to Claude.
+    const contextParts: string[] = [BASE_PROMPT, schemaContext, CONTEXT_INSTRUCTION];
 
     if (sharedIntelligenceContext) {
       contextParts.push(sharedIntelligenceContext);
@@ -471,7 +448,7 @@ export async function POST(request: Request) {
 
     // ── Stream ─────────────────────────────────────────────────────────────────
     const model = "claude-sonnet-4-5";
-    console.log("[brain] prompt budget — system:", systemPrompt.length, "chars | schema:", schemaContext.length, "chars | community:", sharedIntelligenceContext.length, "chars | docs:", documentContext.length, "chars | messages:", anthropicMessages.length);
+    console.log("[brain] prompt budget — system:", systemPrompt.length, "chars | schema:", schemaContext.length, "chars | community:", sharedIntelligenceContext.length, "chars | messages:", anthropicMessages.length);
 
     let stream: AsyncIterable<{ type: string; delta?: { type: string; text?: string } }>;
     try {
