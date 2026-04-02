@@ -32,8 +32,12 @@ Return ONLY a valid JSON object with exactly these fields:
 
 Rules:
 - If the document is unrecognized, set total_races to null.
-- For past performance sheets, total_races = number of prior race lines for the primary horse.
-- race_date is the date of the MOST RECENT race in the document (or the scheduled race date for race cards).
+- total_races = number of DISTINCT race programs (race cards) in the document — i.e., distinct combinations of race date + race number + track.
+  - A past performance sheet for one horse still counts as 1 race card, even if it shows many prior starts in the PP history section.
+  - A multi-race past performance packet (e.g., full field PP for a single race) counts as 1.
+  - A result chart PDF covering multiple race numbers on the same card counts each race number as a separate race (e.g., Race 1, Race 2 … Race 9 = 9).
+  - Do NOT count individual horse past performance lines as races.
+- race_date is the date of the MOST RECENT race card in the document (or the scheduled race date for race cards).
 - Return only the JSON. No preamble, no explanation, no markdown fences.`;
 
 export async function POST(request: Request) {
