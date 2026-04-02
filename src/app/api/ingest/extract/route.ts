@@ -357,6 +357,10 @@ export async function POST(request: Request) {
         ],
       });
 
+      if (extractResponse.stop_reason === "max_tokens") {
+        throw new Error("max_tokens_exceeded");
+      }
+
       const raw = extractResponse.content[0].type === "text"
         ? extractResponse.content[0].text.trim()
         : "";
@@ -384,6 +388,11 @@ export async function POST(request: Request) {
     } catch (extractErr) {
       console.error("[ingest/extract] extraction call error:", extractErr);
 
+      const isTokenLimit = extractErr instanceof Error && extractErr.message === "max_tokens_exceeded";
+      const errorNote = isTokenLimit
+        ? `max_tokens exceeded for race ${race_index}`
+        : `Extraction parse error for race ${race_index}: ${extractErr instanceof Error ? extractErr.message : String(extractErr)}`;
+
       // Log failure
       await admin.from("ingestion_log").insert({
         user_id: user.id,
@@ -391,17 +400,19 @@ export async function POST(request: Request) {
         source_ref: pendingDoc.pdf_hash,
         pdf_hash: pendingDoc.pdf_hash,
         status: "failed",
-        notes: `Extraction parse error for race ${race_index}: ${extractErr instanceof Error ? extractErr.message : String(extractErr)}`,
+        notes: errorNote,
       });
 
       await admin.from("ingestion_jobs").update({
         status: "failed",
-        error_notes: extractErr instanceof Error ? extractErr.message : String(extractErr),
+        error_notes: errorNote,
       }).eq("pdf_hash", pendingDoc.pdf_hash).eq("race_index", race_index).eq("user_id", user.id);
 
       return json({
         status: "failed",
-        message: `We couldn't process race ${race_index}. The response from the AI was malformed. Please try again.`,
+        message: isTokenLimit
+          ? "Extraction incomplete — document may be too large. Try uploading a single race page."
+          : `We couldn't process race ${race_index}. The response from the AI was malformed. Please try again.`,
       });
     }
 
