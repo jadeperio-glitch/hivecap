@@ -277,8 +277,8 @@ async function buildSchemaContext(
   }
 
   // Connections stats for all trainers/jockeys in the result set
-  const trainerNames = [...new Set(horses.map((h) => h.trainer).filter((n): n is string => !!n))];
-  const jockeyNames = [...new Set(horses.map((h) => h.jockey).filter((n): n is string => !!n))];
+  const trainerNames = Array.from(new Set(horses.map((h) => h.trainer).filter((n): n is string => !!n)));
+  const jockeyNames = Array.from(new Set(horses.map((h) => h.jockey).filter((n): n is string => !!n)));
   const allConnNames = [...trainerNames.slice(0, 5), ...jockeyNames.slice(0, 5)];
 
   if (allConnNames.length > 0) {
