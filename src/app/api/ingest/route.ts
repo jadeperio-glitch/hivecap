@@ -81,35 +81,62 @@ export async function POST(request: Request) {
     const admin = createAdminClient();
 
     // ── Step 2a: Hash dedup check ─────────────────────────────────────────────
-    // Two anchors:
-    // 1. pending_documents — written at scan time, catches re-uploads before any extraction
-    // 2. ingestion_log — written after extraction; catch both 'success' and 'partial'
-    //    (partial = extraction succeeded with flags; not a reason to re-scan)
-    console.log("[ingest] checking dedup for hash:", clientHash);
+    // Ownership-aware dedup across three cases:
+    //
+    // A) pending_documents for THIS user → block (extraction already in progress)
+    // B) ingestion_log where user_id = THIS user → block (user already owns this data)
+    // C) ingestion_log where user_id != THIS user:
+    //    - brain_layer = 'shared' → block (data is accessible to all users via shared Brain)
+    //    - brain_layer = 'personal' or null → ALLOW (other user's private data; this user needs their own copy)
+    console.log("[ingest] checking dedup for hash:", clientHash, "| user:", user.id);
 
+    // A) Same user already has this in their pending pipeline
     const { data: existingPending } = await admin
       .from("pending_documents")
       .select("id")
       .eq("pdf_hash", clientHash)
+      .eq("user_id", user.id)
       .limit(1)
       .maybeSingle();
 
     if (existingPending) {
-      console.log("[ingest] duplicate hash found in pending_documents:", clientHash);
+      console.log("[ingest] duplicate — pending_documents record owned by this user:", clientHash);
       return json({ duplicate: true, message: "Brain already has this document." });
     }
 
-    const { data: existingLog } = await admin
+    // B) Same user already completed extraction
+    const { data: ownLog } = await admin
       .from("ingestion_log")
-      .select("id, status")
+      .select("id")
       .eq("pdf_hash", clientHash)
+      .eq("user_id", user.id)
       .in("status", ["success", "partial"])
       .limit(1)
       .maybeSingle();
 
-    if (existingLog) {
-      console.log("[ingest] duplicate hash found in ingestion_log (status:", existingLog.status, "):", clientHash);
+    if (ownLog) {
+      console.log("[ingest] duplicate — ingestion_log record owned by this user:", clientHash);
       return json({ duplicate: true, message: "Brain already has this document." });
+    }
+
+    // C) Another user extracted this doc — check if it reached the shared Brain
+    const { data: otherLogs } = await admin
+      .from("ingestion_log")
+      .select("user_id, horses(brain_layer)")
+      .neq("user_id", user.id)
+      .eq("pdf_hash", clientHash)
+      .in("status", ["success", "partial"])
+      .limit(10);
+
+    if (otherLogs && otherLogs.length > 0) {
+      const isInSharedBrain = otherLogs.some(
+        (row) => (row.horses as { brain_layer?: string } | null)?.brain_layer === "shared",
+      );
+      if (isInSharedBrain) {
+        console.log("[ingest] duplicate — data is in shared Brain, accessible to this user:", clientHash);
+        return json({ duplicate: true, message: "Brain already has this document." });
+      }
+      console.log("[ingest] hash found in other users' personal Brain only — allowing new upload:", clientHash);
     }
 
     // ── Extract text from PDF ─────────────────────────────────────────────────

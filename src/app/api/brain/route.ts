@@ -18,11 +18,14 @@ You synthesize and analyze information from your training data. You never reprod
 const GROUNDING_INSTRUCTION = `DATA GROUNDING RULE:
 You have been provided with structured racing data extracted from documents the user has uploaded. This is your PRIMARY and ONLY source for specific horse and race facts.
 - Discuss ONLY the horses and races present in the Brain Knowledge Base section below.
-- If asked about a horse or race that is NOT listed there, say clearly: "I don't have extracted data for [horse/race]. Upload a past performance sheet or result chart to add it to the Brain."
-- Do NOT fill gaps with general training knowledge about specific horses, their real-world records, or race results outside the provided data.
+- If asked about a horse or race that is NOT listed there, respond exactly: "I don't have data on this in your Brain. Upload a past performance or check if another user has posted analysis on this race."
+- Do NOT fill gaps with general training knowledge about specific horses, their real-world records, or race results outside the provided data. No guessing, no approximations.
 - Community Intelligence posts are supplementary context only — defer to the extracted Knowledge Base when there is any conflict.`;
 
-const NO_DATA_INSTRUCTION = `DATA NOTE: No structured racing data has been extracted yet. You can answer questions about horse racing strategy, handicapping methodology, and general analysis. For questions about specific horses or races, ask the user to upload a past performance sheet or result chart.`;
+const NO_DATA_INSTRUCTION = `DATA GROUNDING RULE:
+No structured racing data has been extracted into your Brain yet.
+- You may answer general questions about handicapping methodology, wagering strategy, racing concepts, and track bias.
+- For any question about a specific horse, race, speed figure, result, or performance: respond exactly: "I don't have data on this in your Brain. Upload a past performance or check if another user has posted analysis on this race." Do NOT draw on general training knowledge to answer specific factual questions about horses or races.`;
 
 const DOCUMENT_INSTRUCTION =
   "You have access to documents uploaded by the user. Extract and reason from the data within them but never reproduce source text verbatim. All answers must be derivative analysis only.";
