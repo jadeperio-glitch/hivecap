@@ -71,8 +71,6 @@ RETURN this exact JSON structure:
       "owner": "<string or null>",
       "age": <integer or null>,
       "sex": "C" | "F" | "G" | "M" | "H" | "R" | null,
-      "color": "<string or null>",
-      "foaling_date": "<YYYY-MM-DD or null>",
       "notes": "<trainer quotes, barn notes — narrative only>",
       "performance": {
         "post_position": <integer or null>,
@@ -95,8 +93,6 @@ RETURN this exact JSON structure:
         "running_style": "E" | "EP" | "PS" | "C" | "S" | null,
         "weight_carried": <integer or null>,
         "odds": <decimal or null>,
-        "beaten_lengths_at_call_1": <decimal or null>,
-        "beaten_lengths_at_call_2": <decimal or null>,
         "trip_notes": "<verbatim narrative or null>",
         "trouble_line": "<verbatim or null>"
       }
@@ -115,6 +111,7 @@ HARD RULES:
 - trip_notes and trouble_line are narrative — capture verbatim from the document.
 - notes fields are for narrative overflow only. Do not put structured data in notes.
 - If the document contains multiple races for the same horse (full PP history), extract the MOST RECENT race as the primary record and note additional races in extraction_flags.
+- For workout tabs or workout sections within a PP sheet: extract the 3 most recent workouts only. Ignore all earlier workout entries.
 
 Return only the JSON object. No preamble, no explanation, no markdown fences.`;
 
@@ -178,8 +175,6 @@ interface ExtractedPerformance {
   running_style: string | null;
   weight_carried: number | null;
   odds: number | null;
-  beaten_lengths_at_call_1: number | null;
-  beaten_lengths_at_call_2: number | null;
   trip_notes: string | null;
   trouble_line: string | null;
 }
@@ -194,8 +189,6 @@ interface ExtractedHorse {
   owner: string | null;
   age: number | null;
   sex: string | null;
-  color: string | null;
-  foaling_date: string | null;
   notes: string | null;
   performance: ExtractedPerformance;
 }
@@ -352,7 +345,7 @@ export async function POST(request: Request) {
         messages: [
           {
             role: "user",
-            content: `Extract race ${race_index} of ${pendingDoc.total_races} from this document:\n\n${extractedText}`,
+            content: `Extract race ${race_index} of ${pendingDoc.total_races} from this document:\n\n${extractedText.slice(0, 6000)}`,
           },
         ],
       });
@@ -567,8 +560,6 @@ export async function POST(request: Request) {
             owner: horseData.owner ?? null,
             age: horseData.age ?? null,
             sex: horseData.sex ?? null,
-            color: horseData.color ?? null,
-            foaling_date: horseData.foaling_date ?? null,
             notes: horseData.notes ?? null,
             merge_confirmed: mergeConfirmed,
             source: "user_upload",
@@ -621,8 +612,6 @@ export async function POST(request: Request) {
               running_style: perf.running_style ?? null,
               weight_carried: perf.weight_carried ?? null,
               odds: perf.odds ?? null,
-              beaten_lengths_at_call_1: perf.beaten_lengths_at_call_1 ?? null,
-              beaten_lengths_at_call_2: perf.beaten_lengths_at_call_2 ?? null,
               trip_notes: perf.trip_notes ?? null,
               trouble_line: perf.trouble_line ?? null,
               source: "user_upload",
@@ -660,8 +649,6 @@ export async function POST(request: Request) {
             running_style: perf.running_style ?? null,
             weight_carried: perf.weight_carried ?? null,
             odds: perf.odds ?? null,
-            beaten_lengths_at_call_1: perf.beaten_lengths_at_call_1 ?? null,
-            beaten_lengths_at_call_2: perf.beaten_lengths_at_call_2 ?? null,
             trip_notes: perf.trip_notes ?? null,
             trouble_line: perf.trouble_line ?? null,
             brain_layer: "personal",
