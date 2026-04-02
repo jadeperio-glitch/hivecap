@@ -361,7 +361,20 @@ export async function POST(request: Request) {
         ? extractResponse.content[0].text.trim()
         : "";
 
-      const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+      console.log("[ingest/extract] raw Claude response:", raw);
+
+      // Strip markdown fences — handles leading/trailing fences, newlines before
+      // the opening fence, and any trailing text after the closing fence.
+      let cleaned = raw;
+      const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+      if (fenceMatch) {
+        cleaned = fenceMatch[1].trim();
+      } else {
+        cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+      }
+
+      console.log("[ingest/extract] cleaned for parse:", cleaned);
+
       const parsed = JSON.parse(cleaned);
 
       if (!isValidExtraction(parsed)) {
