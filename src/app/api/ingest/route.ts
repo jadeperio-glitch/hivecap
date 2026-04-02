@@ -81,17 +81,34 @@ export async function POST(request: Request) {
     const admin = createAdminClient();
 
     // ── Step 2a: Hash dedup check ─────────────────────────────────────────────
-    // Check ingestion_log for this hash. If found, skip all extraction.
+    // Two anchors:
+    // 1. pending_documents — written at scan time, catches re-uploads before any extraction
+    // 2. ingestion_log — written after extraction; catch both 'success' and 'partial'
+    //    (partial = extraction succeeded with flags; not a reason to re-scan)
+    console.log("[ingest] checking dedup for hash:", clientHash);
+
+    const { data: existingPending } = await admin
+      .from("pending_documents")
+      .select("id")
+      .eq("pdf_hash", clientHash)
+      .limit(1)
+      .maybeSingle();
+
+    if (existingPending) {
+      console.log("[ingest] duplicate hash found in pending_documents:", clientHash);
+      return json({ duplicate: true, message: "Brain already has this document." });
+    }
+
     const { data: existingLog } = await admin
       .from("ingestion_log")
       .select("id, status")
       .eq("pdf_hash", clientHash)
-      .eq("status", "success")
+      .in("status", ["success", "partial"])
       .limit(1)
       .maybeSingle();
 
     if (existingLog) {
-      console.log("[ingest] duplicate hash detected:", clientHash);
+      console.log("[ingest] duplicate hash found in ingestion_log (status:", existingLog.status, "):", clientHash);
       return json({ duplicate: true, message: "Brain already has this document." });
     }
 
