@@ -113,9 +113,7 @@ export async function POST(request: Request) {
 
     if (logRows && logRows.length > 0) {
       // Step 2: Collect distinct horse_ids from those rows
-      const horseIds = [
-        ...new Set(logRows.map((r) => r.horse_id).filter((id): id is string => !!id)),
-      ];
+      const horseIds = Array.from(new Set(logRows.map((r) => r.horse_id).filter((id): id is string => !!id)));
 
       // Step 3: Query horses directly for uploaded_by + brain_layer (no FK join)
       let horsesData: Array<{ id: string; uploaded_by: string | null; brain_layer: string | null }> = [];
