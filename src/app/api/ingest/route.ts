@@ -236,9 +236,14 @@ export async function POST(request: Request) {
       return json({ error: "Failed to store document for extraction" }, 500);
     }
 
-    // ── Compute expires_at = MAX(race_date, now()) + 24 hours ─────────────────
+    // ── Compute expires_at = MAX(race_date end-of-day, now()) + 24 hours ───────
+    // Parsing "YYYY-MM-DD" as UTC midnight under-counts by ~24h for users in
+    // any timezone. Use end-of-day (23:59:59 UTC) as the race_date anchor so a
+    // same-day or next-day upload always gets the full 24h window after the race.
     const now = Date.now();
-    const raceDateMs = scan.race_date ? new Date(scan.race_date).getTime() : now;
+    const raceDateMs = scan.race_date
+      ? new Date(`${scan.race_date}T23:59:59Z`).getTime()
+      : now;
     const expiresAt = new Date(Math.max(raceDateMs, now) + 24 * 60 * 60 * 1000).toISOString();
 
     // ── Insert pending_documents ───────────────────────────────────────────────

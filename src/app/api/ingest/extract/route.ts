@@ -509,16 +509,25 @@ export async function POST(request: Request) {
         .limit(5);
 
       if (nameMatches && nameMatches.length > 0) {
-        // Pass 2: confirm sire + dam
+        // Pass 2: confirm sire + dam.
+        // A mismatch (both sides have data, values differ) is a collision — don't merge.
+        // If one or both sides have no pedigree data, merge tentatively (merge_confirmed = false).
         const fullMatch = nameMatches.find((h) => {
-          const sireMatch = !horseData.sire || !h.sire || h.sire.toLowerCase() === horseData.sire.toLowerCase();
-          const damMatch = !horseData.dam || !h.dam || h.dam.toLowerCase() === horseData.dam.toLowerCase();
-          return sireMatch && damMatch;
+          const sireConflict = !!horseData.sire && !!h.sire &&
+            h.sire.toLowerCase() !== horseData.sire.toLowerCase();
+          const damConflict = !!horseData.dam && !!h.dam &&
+            h.dam.toLowerCase() !== horseData.dam.toLowerCase();
+          return !sireConflict && !damConflict;
         });
 
         if (fullMatch) {
           horseId = fullMatch.id;
-          mergeConfirmed = true;
+          // Only set merge_confirmed if pedigree was actually confirmed on at least one side
+          const sireConfirmed = !!horseData.sire && !!fullMatch.sire &&
+            fullMatch.sire.toLowerCase() === horseData.sire.toLowerCase();
+          const damConfirmed = !!horseData.dam && !!fullMatch.dam &&
+            fullMatch.dam.toLowerCase() === horseData.dam.toLowerCase();
+          mergeConfirmed = sireConfirmed || damConfirmed;
 
           // Update merge_confirmed + canonical_source if incoming source is higher priority
           const incomingPriority = sourcePriority("user_upload");

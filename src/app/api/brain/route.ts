@@ -13,7 +13,7 @@ const BASE_PROMPT = `You are the HiveCap Brain — an expert horse racing analys
 - The 2026 Kentucky Derby field and contenders
 - Track bias, trainer patterns, and jockey statistics
 
-You synthesize and analyze information from your training data. You never reproduce copyrighted content verbatim — you always analyze, summarize, and provide original insights. You are precise, confident, and data-driven. When discussing horses, lead with the most analytically relevant factors.`;
+You never reproduce copyrighted content verbatim — you always analyze, summarize, and provide original insights. You are precise, confident, and data-driven. When discussing horses, lead with the most analytically relevant factors.`;
 
 // Returned verbatim when the schema context is empty — Claude is never called.
 const NO_DATA_RESPONSE =
@@ -100,9 +100,22 @@ async function buildSchemaContext(
     console.log("[brain/schema] termMatches rows:", termMatches.length);
   }
 
-  // Merge: term matches first (higher relevance), then own/shared baseline; dedup by id
+  // Lowercase fallback: find horses in the baseline whose name appears anywhere in the query.
+  // Catches queries where the user types a horse name in lowercase (missed by the capitalized-word regex).
+  const lowercaseMatches: NonNullable<typeof ownHorses> = [];
+  if (ownHorses && ownHorses.length > 0) {
+    const queryLower = userQuery.toLowerCase();
+    for (const horse of ownHorses) {
+      if (queryLower.includes(horse.name.toLowerCase())) {
+        lowercaseMatches.push(horse);
+      }
+    }
+  }
+
+  // Merge: lowercase matches first (explicit mention), then capitalized term matches,
+  // then own/shared baseline; dedup by id.
   const seen = new Set<string>();
-  const horses = [...termMatches, ...(ownHorses ?? [])].filter((h) => {
+  const horses = [...lowercaseMatches, ...termMatches, ...(ownHorses ?? [])].filter((h) => {
     if (seen.has(h.id)) return false;
     seen.add(h.id);
     return true;
@@ -117,7 +130,70 @@ async function buildSchemaContext(
     "",
   ];
 
-  for (const horse of horses.slice(0, 15)) {
+  // FIX 1: Single batch query for all performances (replaces N+1 per-horse loop).
+  // FIX 6: Include all fraction fields.
+  const topHorses = horses.slice(0, 15);
+  const horseIds = topHorses.map((h) => h.id);
+
+  type PerfRow = {
+    horse_id: string;
+    finish_position: number | null;
+    lengths_beaten: number | null;
+    beyer_figure: number | null;
+    beyer_source: string | null;
+    equibase_speed_fig: number | null;
+    equibase_source: string | null;
+    timeform_rating: number | null;
+    timeform_source: string | null;
+    frac_quarter: string | null;
+    frac_quarter_sec: number | null;
+    frac_half: string | null;
+    frac_half_sec: number | null;
+    frac_three_quarters: string | null;
+    frac_three_quarters_sec: number | null;
+    final_time: string | null;
+    running_style: string | null;
+    weight_carried: number | null;
+    odds: number | null;
+    trip_notes: string | null;
+    trouble_line: string | null;
+    races: {
+      race_date?: string; race_number?: number; distance?: string;
+      surface?: string; condition?: string; class_level?: string; purse?: number;
+      tracks?: { name?: string; abbreviation?: string } | null;
+    } | null;
+  };
+
+  const { data: allPerfs } = await admin
+    .from("performance")
+    .select(`
+      horse_id,
+      finish_position, lengths_beaten,
+      beyer_figure, beyer_source,
+      equibase_speed_fig, equibase_source,
+      timeform_rating, timeform_source,
+      frac_quarter, frac_quarter_sec,
+      frac_half, frac_half_sec,
+      frac_three_quarters, frac_three_quarters_sec,
+      final_time, running_style, weight_carried, odds,
+      trip_notes, trouble_line,
+      races (
+        race_date, race_number, distance, surface, condition, class_level, purse,
+        tracks ( name, abbreviation )
+      )
+    `)
+    .in("horse_id", horseIds)
+    .limit(120); // 8 per horse × 15 horses
+
+  // Group performances by horse_id for O(1) lookup in rendering loop
+  const perfsByHorseId = new Map<string, PerfRow[]>();
+  for (const p of (allPerfs ?? []) as PerfRow[]) {
+    const list = perfsByHorseId.get(p.horse_id) ?? [];
+    list.push(p);
+    perfsByHorseId.set(p.horse_id, list);
+  }
+
+  for (const horse of topHorses) {
     const header = [
       `HORSE: ${horse.name}`,
       horse.sex ? `(${horse.sex})` : null,
@@ -141,41 +217,21 @@ async function buildSchemaContext(
 
     if (horse.notes) lines.push(`  Notes: ${horse.notes}`);
 
-    // Performance records with race + track context
-    const { data: perfs } = await admin
-      .from("performance")
-      .select(`
-        finish_position, lengths_beaten,
-        beyer_figure, beyer_source,
-        equibase_speed_fig, equibase_source,
-        timeform_rating, timeform_source,
-        final_time, running_style, weight_carried, odds,
-        trip_notes, trouble_line,
-        races (
-          race_date, race_number, distance, surface, condition, class_level, purse,
-          tracks ( name, abbreviation )
-        )
-      `)
-      .eq("horse_id", horse.id)
-      .limit(8);
+    const perfs = perfsByHorseId.get(horse.id) ?? [];
 
-    if (perfs && perfs.length > 0) {
+    if (perfs.length > 0) {
       // Sort by race_date descending client-side
       const sorted = [...perfs]
         .sort((a, b) => {
-          const da = (a.races as { race_date?: string } | null)?.race_date ?? "";
-          const db = (b.races as { race_date?: string } | null)?.race_date ?? "";
+          const da = a.races?.race_date ?? "";
+          const db = b.races?.race_date ?? "";
           return db.localeCompare(da);
         })
         .slice(0, 5);
 
       lines.push("  Performance:");
       for (const p of sorted) {
-        const race = p.races as {
-          race_date?: string; race_number?: number; distance?: string;
-          surface?: string; condition?: string; class_level?: string; purse?: number;
-          tracks?: { name?: string; abbreviation?: string } | null;
-        } | null;
+        const race = p.races;
         const track = race?.tracks;
         const trackName = track?.name ?? track?.abbreviation ?? "Unknown";
 
@@ -201,6 +257,9 @@ async function buildSchemaContext(
           p.timeform_rating != null
             ? `TF: ${p.timeform_rating}${p.timeform_source ? ` (${p.timeform_source})` : ""}`
             : null,
+          p.frac_quarter ? `Q: ${p.frac_quarter}` : null,
+          p.frac_half ? `H: ${p.frac_half}` : null,
+          p.frac_three_quarters ? `¾: ${p.frac_three_quarters}` : null,
           p.final_time ? `Final: ${p.final_time}` : null,
           p.running_style ? `Style: ${p.running_style}` : null,
           p.weight_carried != null ? `Wt: ${p.weight_carried}` : null,
@@ -390,9 +449,9 @@ export async function POST(request: Request) {
     }
 
     // ── Code-level context gate ────────────────────────────────────────────────
-    // If schema returned no records, return the fixed no-data message and stop.
-    // Claude is never called — this is not a prompt instruction, it is a hard gate.
-    if (!schemaContext) {
+    // If NEITHER schema context nor shared community intelligence is present,
+    // return the fixed no-data message and stop. Claude is never called.
+    if (!schemaContext && !sharedIntelligenceContext) {
       console.log("[brain] no schema context — returning no-data gate response");
 
       // Persist the gate response as an assistant message so conversation history is clean
