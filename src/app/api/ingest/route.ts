@@ -104,7 +104,7 @@ export async function POST(request: Request) {
       return json({ duplicate: true, message: "Brain already has this document." });
     }
 
-    // B) Same user already completed extraction
+    // B) Same user already completed extraction — check user_id directly
     const { data: ownLog } = await admin
       .from("ingestion_log")
       .select("id")
@@ -119,24 +119,39 @@ export async function POST(request: Request) {
       return json({ duplicate: true, message: "Brain already has this document." });
     }
 
-    // C) Another user extracted this doc — check if it reached the shared Brain
+    // C) Another user extracted this doc — block only if it reached the shared Brain.
+    // Two-step: get horse_ids from the log, then query horses directly for brain_layer.
+    // Avoids nested join which can silently return null and produce wrong results.
     const { data: otherLogs } = await admin
       .from("ingestion_log")
-      .select("user_id, horses(brain_layer)")
+      .select("user_id, horse_id")
       .neq("user_id", user.id)
       .eq("pdf_hash", clientHash)
       .in("status", ["success", "partial"])
+      .not("horse_id", "is", null)
       .limit(10);
 
     if (otherLogs && otherLogs.length > 0) {
-      const isInSharedBrain = otherLogs.some(
-        (row) => (row.horses as { brain_layer?: string } | null)?.brain_layer === "shared",
-      );
-      if (isInSharedBrain) {
-        console.log("[ingest] duplicate — data is in shared Brain, accessible to this user:", clientHash);
-        return json({ duplicate: true, message: "Brain already has this document." });
+      const horseIds = [...new Set(otherLogs.map((r) => r.horse_id).filter(Boolean))] as string[];
+      console.log("[ingest] hash found in other users' logs — checking brain_layer for horse_ids:", horseIds);
+
+      if (horseIds.length > 0) {
+        const { data: sharedHorse } = await admin
+          .from("horses")
+          .select("id")
+          .in("id", horseIds)
+          .eq("brain_layer", "shared")
+          .limit(1)
+          .maybeSingle();
+
+        if (sharedHorse) {
+          console.log("[ingest] duplicate — data is in shared Brain, accessible to this user:", clientHash);
+          return json({ duplicate: true, message: "Brain already has this document." });
+        }
       }
-      console.log("[ingest] hash found in other users' personal Brain only — allowing new upload:", clientHash);
+
+      // All matching records are other users' personal data — allow this upload
+      console.log("[ingest] hash exists only in other users' personal Brain — allowing upload:", clientHash);
     }
 
     // ── Extract text from PDF ─────────────────────────────────────────────────
