@@ -16,7 +16,7 @@ function json(body: object, status = 200) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Lightweight scan prompt — returns document_type, total_races, race_date,
-// track_name, track_abbreviation. One call, cheap, fast.
+// track_name, track_abbreviation, race_numbers. One call, cheap, fast.
 // ─────────────────────────────────────────────────────────────────────────────
 const SCAN_SYSTEM = `You are scanning a horse racing document for the HiveCap Brain ingestion system.
 
@@ -24,6 +24,7 @@ Return ONLY a valid JSON object with exactly these fields:
 {
   "document_type": "past_performance" | "result_chart" | "race_card" | "clocker_report" | "workout_tab" | "unrecognized",
   "total_races": <integer or null>,
+  "race_numbers": [<integer>, ...] or null,
   "race_date": "<YYYY-MM-DD> or null",
   "track_name": "<string> or null",
   "track_abbreviation": "<2-3 letter abbreviation> or null",
@@ -31,12 +32,13 @@ Return ONLY a valid JSON object with exactly these fields:
 }
 
 Rules:
-- If the document is unrecognized, set total_races to null.
+- If the document is unrecognized, set total_races and race_numbers to null.
 - total_races = number of DISTINCT race programs (race cards) in the document — i.e., distinct combinations of race date + race number + track.
   - A past performance sheet for one horse still counts as 1 race card, even if it shows many prior starts in the PP history section.
   - A multi-race past performance packet (e.g., full field PP for a single race) counts as 1.
   - A result chart PDF covering multiple race numbers on the same card counts each race number as a separate race (e.g., Race 1, Race 2 … Race 9 = 9).
   - Do NOT count individual horse past performance lines as races.
+- race_numbers is an ordered array of the ACTUAL race numbers from the document (e.g., [7] for a single Race 7 PP sheet, [1,2,3,4,5,6,7,8,9] for a 9-race result chart). Length must equal total_races. If the race number cannot be determined, use sequential integers starting at 1.
 - race_date is the date of the MOST RECENT race card in the document (or the scheduled race date for race cards).
 - Return only the JSON. No preamble, no explanation, no markdown fences.`;
 
@@ -120,6 +122,7 @@ export async function POST(request: Request) {
     let scan: {
       document_type: string;
       total_races: number | null;
+      race_numbers: number[] | null;
       race_date: string | null;
       track_name: string | null;
       track_abbreviation: string | null;
@@ -236,6 +239,7 @@ export async function POST(request: Request) {
       pending_document_id: pendingDoc.id,
       document_type: scan.document_type,
       total_races: totalRaces,
+      race_numbers: scan.race_numbers ?? racesArr,
       race_date: scan.race_date,
       track_name: scan.track_name,
       track_abbreviation: scan.track_abbreviation,

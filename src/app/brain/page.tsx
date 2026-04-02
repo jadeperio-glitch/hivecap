@@ -26,9 +26,15 @@ interface PendingIngestion {
   race_date: string | null;
   track_name: string | null;
   track_abbreviation: string | null;
+  race_numbers: number[];
   races_pending: number[];
   races_extracted: number[];
   filename: string;
+}
+
+function formatRaceDate(iso: string | null): string {
+  if (!iso) return "";
+  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
 const MAX_BYTES = 10 * 1024 * 1024;
@@ -262,6 +268,7 @@ export default function BrainPage() {
         race_date: data.race_date ?? null,
         track_name: data.track_name ?? null,
         track_abbreviation: data.track_abbreviation ?? null,
+        race_numbers: data.race_numbers ?? Array.from({ length: totalRaces }, (_, i) => i + 1),
         races_pending: data.races_pending ?? Array.from({ length: totalRaces }, (_, i) => i + 1),
         races_extracted: [],
         filename: file.name,
@@ -714,26 +721,32 @@ export default function BrainPage() {
                     : "Select a race to extract:"}
                 </p>
                 <div className="flex flex-wrap gap-2">
-                  {pendingIngestion.races_pending.map((raceIndex) => (
-                    <button
-                      key={raceIndex}
-                      onClick={() => handleExtractRace(raceIndex)}
-                      disabled={extractingRace}
-                      className="bg-gold/10 border border-gold/30 hover:bg-gold/20 hover:border-gold/50 text-charcoal dark:text-cream text-xs font-medium rounded-lg px-3 py-1.5 transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                      {extractingRace ? (
-                        <span className="flex items-center gap-1">
-                          <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" />
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
-                          </svg>
-                          Race {raceIndex}
-                        </span>
-                      ) : (
-                        `Race ${raceIndex}`
-                      )}
-                    </button>
-                  ))}
+                  {pendingIngestion.races_pending.map((raceIndex) => {
+                    const actualRaceNum = pendingIngestion.race_numbers[raceIndex - 1] ?? raceIndex;
+                    const trackPart = pendingIngestion.track_name ? ` · ${pendingIngestion.track_name}` : "";
+                    const datePart = pendingIngestion.race_date ? ` · ${formatRaceDate(pendingIngestion.race_date)}` : "";
+                    const label = `Race ${actualRaceNum}${trackPart}${datePart}`;
+                    return (
+                      <button
+                        key={raceIndex}
+                        onClick={() => handleExtractRace(raceIndex)}
+                        disabled={extractingRace}
+                        className="bg-gold/10 border border-gold/30 hover:bg-gold/20 hover:border-gold/50 text-charcoal dark:text-cream text-xs font-medium rounded-lg px-3 py-1.5 transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        {extractingRace ? (
+                          <span className="flex items-center gap-1">
+                            <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" />
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
+                            </svg>
+                            {label}
+                          </span>
+                        ) : (
+                          label
+                        )}
+                      </button>
+                    );
+                  })}
                   <button
                     onClick={() => setPendingIngestion(null)}
                     disabled={extractingRace}
