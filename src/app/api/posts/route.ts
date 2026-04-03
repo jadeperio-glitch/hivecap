@@ -51,7 +51,6 @@ export async function POST(request: Request) {
     // Parse body
     let body: {
       content?: string;
-      brain_verified?: boolean;
       project_id?: string | null;
       conversation_id?: string | null;
     };
@@ -61,7 +60,7 @@ export async function POST(request: Request) {
       return json({ error: "Invalid request body" }, 400);
     }
 
-    const { content, brain_verified = false, project_id = null, conversation_id = null } = body;
+    const { content, project_id = null, conversation_id = null } = body;
 
     if (!content || typeof content !== "string" || !content.trim()) {
       return json({ error: "content is required" }, 400);
@@ -90,7 +89,7 @@ export async function POST(request: Request) {
         user_email: user.email ?? "unknown",
         username,
         content: content.trim(),
-        brain_verified: Boolean(brain_verified),
+        brain_verified: Boolean(conversation_id), // only true when posted from Brain chat (always carries a conversation_id)
         project_id: project_id || null,
         conversation_id: conversation_id || null,
       })

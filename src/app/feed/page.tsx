@@ -89,7 +89,6 @@ export default function FeedPage() {
 
   // Compose state
   const [content, setContent] = useState("");
-  const [brainVerified, setBrainVerified] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -143,7 +142,6 @@ export default function FeedPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           content: content.trim(),
-          brain_verified: brainVerified,
           project_id: selectedProjectId || null,
         }),
       });
@@ -151,7 +149,6 @@ export default function FeedPage() {
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
 
       setContent("");
-      setBrainVerified(false);
       setSelectedProjectId("");
       await fetchPosts();
     } catch (err) {
@@ -236,19 +233,6 @@ export default function FeedPage() {
 
             <div className="flex items-center justify-between mt-3 flex-wrap gap-2">
               <div className="flex items-center gap-3 flex-wrap">
-                {/* Brain-verified toggle */}
-                <label className="flex items-center gap-1.5 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={brainVerified}
-                    onChange={(e) => setBrainVerified(e.target.checked)}
-                    className="w-3.5 h-3.5 accent-gold"
-                  />
-                  <span className="text-xs text-charcoal/60 dark:text-cream/60">
-                    🐝 Brain-verified
-                  </span>
-                </label>
-
                 {/* Project selector */}
                 {projects.length > 0 && (
                   <select
