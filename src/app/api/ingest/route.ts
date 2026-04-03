@@ -107,7 +107,7 @@ export async function POST(request: Request) {
       const racesExtracted = (existingPending.races_extracted as number[]) ?? [];
       const createdAt = new Date(existingPending.created_at);
       const ageMs = now.getTime() - createdAt.getTime();
-      const isStuck = racesExtracted.length === 0 && ageMs > 60 * 60 * 1000; // 0 extracted, >1h old
+      const isStuck = racesExtracted.length === 0 && ageMs > 2 * 60 * 60 * 1000; // 0 extracted, >2h old
 
       if (isExpired || isStuck) {
         console.log("[ingest] stale pending record — deleting and allowing fresh upload | expired:", isExpired, "| stuck:", isStuck, "| hash:", clientHash);
