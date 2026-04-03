@@ -1,4 +1,4 @@
-import { getNorthAmericaMeets, getNorthAmericaEntries } from "@/lib/racing-api";
+import { getNorthAmericaMeets, getNorthAmericaEntries, getUpcomingRaces } from "@/lib/racing-api";
 
 export const runtime = "nodejs";
 
@@ -57,18 +57,36 @@ export async function GET(request: Request) {
 
     console.log("[diagnostic] target meet:", targetMeet.meet_id, targetMeet.track_name);
 
-    // Step 3: fetch entries for the target meet — raw dump, no schema mapping
-    const entriesResponse = await getNorthAmericaEntries(targetMeet.meet_id);
+    // Step 3: try Path B — NA entries endpoint
+    let pathUsed: "B" | "A" = "B";
+    let data: unknown = null;
+    let pathBError: string | null = null;
+
+    try {
+      data = await getNorthAmericaEntries(targetMeet.meet_id);
+      console.log("[diagnostic] Path B succeeded");
+    } catch (err) {
+      const e = err as Error;
+      pathBError = e.message;
+      console.warn("[diagnostic] Path B failed:", e.message, "— falling back to Path A");
+
+      // Path A fallback — /v1/racecards?course=<track>
+      pathUsed = "A";
+      data = await getUpcomingRaces(targetMeet.track_name);
+      console.log("[diagnostic] Path A succeeded");
+    }
 
     return json({
       diagnostic: true,
       date,
+      path_used: pathUsed,
+      ...(pathBError ? { path_b_error: pathBError } : {}),
       meet: {
         meet_id: targetMeet.meet_id,
         track_name: targetMeet.track_name,
         country: targetMeet.country,
       },
-      entries_raw: entriesResponse,
+      data,
     });
   } catch (err) {
     const e = err as Error;
