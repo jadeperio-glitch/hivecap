@@ -7,14 +7,12 @@ import { createClient } from "@/lib/supabase/client";
 import { HiveCapLogo } from "@/components/HiveCapLogo";
 import { ThemeToggle } from "@/components/ThemeToggle";
 
-const VALID_INVITE_CODE = "maxplayer";
 
 export default function SignupPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [inviteCode, setInviteCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -22,11 +20,6 @@ export default function SignupPage() {
     e.preventDefault();
     setError(null);
 
-    // Client-side invite code validation
-    if (inviteCode.trim().toLowerCase() !== VALID_INVITE_CODE) {
-      setError("Invalid invite code");
-      return;
-    }
 
     const trimmedUsername = username.trim();
     if (!trimmedUsername) {
@@ -110,7 +103,7 @@ export default function SignupPage() {
           Request Access
         </h1>
         <p className="text-charcoal/50 dark:text-cream/50 text-sm mb-8">
-          An invite code is required to create an account
+          Create your account to get started
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-5">
@@ -175,24 +168,6 @@ export default function SignupPage() {
             />
           </div>
 
-          {/* Invite Code */}
-          <div>
-            <label
-              htmlFor="inviteCode"
-              className="block text-xs font-semibold text-charcoal/60 dark:text-cream/60 uppercase tracking-wider mb-2"
-            >
-              Invite Code
-            </label>
-            <input
-              id="inviteCode"
-              type="text"
-              value={inviteCode}
-              onChange={(e) => setInviteCode(e.target.value)}
-              required
-              placeholder="Enter your invite code"
-              className="w-full bg-cream dark:bg-charcoal border border-gold/20 rounded-lg px-4 py-3 text-charcoal dark:text-cream placeholder:text-charcoal/25 dark:placeholder:text-cream/25 text-sm focus:border-gold/60 focus:ring-1 focus:ring-gold/30 transition-colors duration-200 outline-none"
-            />
-          </div>
 
           {/* Error */}
           {error && (
