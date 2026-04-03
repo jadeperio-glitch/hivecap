@@ -251,6 +251,12 @@ export async function POST(request: Request) {
       return json({ error: "Unauthorized" }, 401);
     }
 
+    // ── Admin check ───────────────────────────────────────────────────────────
+    const adminIds = (process.env.HIVECAP_ADMIN_USER_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    const isAdmin = adminIds.includes(user.id);
+    const brainLayer = isAdmin ? "shared" : "personal";
+    console.log("[ingest/extract] user:", user.id, "| admin:", isAdmin, "| brain_layer:", brainLayer);
+
     // ── Parse body ────────────────────────────────────────────────────────────
     let body: { pending_document_id?: string; race_index?: number };
     try {
@@ -344,11 +350,9 @@ export async function POST(request: Request) {
     // ── Step 3: Claude extraction call ────────────────────────────────────────
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-    // Admin bypass: users in HIVECAP_ADMIN_USER_IDS get no text truncation.
-    const adminIds = (process.env.HIVECAP_ADMIN_USER_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-    const isAdmin = adminIds.includes(user.id);
+    // Admin bypass: no text truncation limit.
     const textLimit = isAdmin ? extractedText.length : 12000;
-    console.log("[ingest/extract] user:", user.id, "| admin:", isAdmin, "| text length:", extractedText.length, "| sending:", Math.min(extractedText.length, textLimit), "chars");
+    console.log("[ingest/extract] text length:", extractedText.length, "| sending:", Math.min(extractedText.length, textLimit), "chars");
 
     let extraction: ExtractionResult;
     try {
@@ -518,7 +522,7 @@ export async function POST(request: Request) {
       // Pass 1: exact name match (case-insensitive)
       const { data: nameMatches } = await admin
         .from("horses")
-        .select("id, name, sire, dam, merge_confirmed, canonical_source, source")
+        .select("id, name, sire, dam, merge_confirmed, canonical_source, source, brain_layer")
         .ilike("name", horseData.name)
         .limit(5);
 
@@ -552,12 +556,16 @@ export async function POST(request: Request) {
               merge_confirmed: true,
               canonical_source: "user_upload",
               source: "user_upload",
-              // Update mutable fields if we have better data
               trainer: horseData.trainer ?? undefined,
               jockey: horseData.jockey ?? undefined,
+              // Admin upload promotes personal rows to shared Brain layer
+              ...(isAdmin && fullMatch.brain_layer === "personal" ? { brain_layer: "shared" } : {}),
             }).eq("id", horseId);
           } else {
-            await admin.from("horses").update({ merge_confirmed: true }).eq("id", horseId);
+            await admin.from("horses").update({
+              merge_confirmed: true,
+              ...(isAdmin && fullMatch.brain_layer === "personal" ? { brain_layer: "shared" } : {}),
+            }).eq("id", horseId);
           }
         } else {
           // Name matches but sire/dam don't — potential name collision
@@ -587,7 +595,7 @@ export async function POST(request: Request) {
             merge_confirmed: mergeConfirmed,
             source: "user_upload",
             canonical_source: "user_upload",
-            brain_layer: "personal",
+            brain_layer: brainLayer,
             uploaded_by: user.id,
           })
           .select("id")
@@ -639,6 +647,7 @@ export async function POST(request: Request) {
               trouble_line: perf.trouble_line ?? null,
               source: "user_upload",
               uploaded_by: user.id,
+              brain_layer: brainLayer,
             }).eq("id", existingPerf.id);
           } else {
             // Lower trust — log but don't overwrite
@@ -674,7 +683,7 @@ export async function POST(request: Request) {
             odds: perf.odds ?? null,
             trip_notes: perf.trip_notes ?? null,
             trouble_line: perf.trouble_line ?? null,
-            brain_layer: "personal",
+            brain_layer: brainLayer,
             uploaded_by: user.id,
             source: "user_upload",
           });
