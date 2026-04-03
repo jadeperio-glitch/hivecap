@@ -93,8 +93,9 @@ export default function FeedPage() {
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
 
-  const MAX_CHARS = 2000;
+  const MAX_CHARS = isAdmin ? Infinity : 2000;
 
   const fetchPosts = useCallback(async () => {
     setIsLoadingPosts(true);
@@ -124,6 +125,7 @@ export default function FeedPage() {
         setUserEmail(user.email ?? null);
         fetchPosts();
         fetchProjects();
+        fetch("/api/user/role").then((r) => r.json()).then((d) => setIsAdmin(d.isAdmin === true));
       }
     });
   }, [router, fetchPosts, fetchProjects]);
@@ -228,7 +230,7 @@ export default function FeedPage() {
               onChange={(e) => setContent(e.target.value)}
               placeholder="Share a pick, analysis, or race note…"
               rows={3}
-              maxLength={MAX_CHARS}
+              maxLength={isAdmin ? undefined : MAX_CHARS}
               className="w-full bg-transparent text-charcoal dark:text-cream placeholder:text-charcoal/25 dark:placeholder:text-cream/25 text-sm resize-none leading-relaxed outline-none"
             />
 
@@ -265,9 +267,11 @@ export default function FeedPage() {
               </div>
 
               <div className="flex items-center gap-2">
-                <span className={`text-xs ${content.length > MAX_CHARS * 0.9 ? "text-red-400" : "text-charcoal/25 dark:text-cream/25"}`}>
-                  {content.length}/{MAX_CHARS}
-                </span>
+                {!isAdmin && (
+                  <span className={`text-xs ${content.length > 1800 ? "text-red-400" : "text-charcoal/25 dark:text-cream/25"}`}>
+                    {content.length}/2000
+                  </span>
+                )}
                 <button
                   type="submit"
                   disabled={!content.trim() || isSubmitting || content.length > MAX_CHARS}
