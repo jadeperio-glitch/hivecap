@@ -88,19 +88,36 @@ export async function POST(request: Request) {
     // Branch C: all horses are other users' personal data → allow (user needs their own copy)
     console.log("[ingest] checking dedup for hash:", clientHash, "| user:", user.id);
 
-    // Pre-check: same user already has this in their pending pipeline (scan in progress,
-    // no ingestion_log entry yet)
+    // Pre-check: same user already has this in their pending pipeline.
+    // Three outcomes:
+    //   expired → delete stale record, proceed fresh
+    //   stuck (0 races extracted, created > 1 hour ago) → delete, proceed fresh
+    //   active (races in progress) → block, return ready
     const { data: existingPending } = await admin
       .from("pending_documents")
-      .select("id")
+      .select("id, expires_at, races_extracted, created_at")
       .eq("pdf_hash", clientHash)
       .eq("user_id", user.id)
       .limit(1)
       .maybeSingle();
 
     if (existingPending) {
-      console.log("[ingest] duplicate — pending_documents for this user:", clientHash);
-      return json({ status: "ready", message: "Got it — ready to analyze." });
+      const now = new Date();
+      const isExpired = new Date(existingPending.expires_at) < now;
+      const racesExtracted = (existingPending.races_extracted as number[]) ?? [];
+      const createdAt = new Date(existingPending.created_at);
+      const ageMs = now.getTime() - createdAt.getTime();
+      const isStuck = racesExtracted.length === 0 && ageMs > 60 * 60 * 1000; // 0 extracted, >1h old
+
+      if (isExpired || isStuck) {
+        console.log("[ingest] stale pending record — deleting and allowing fresh upload | expired:", isExpired, "| stuck:", isStuck, "| hash:", clientHash);
+        await admin.from("pending_documents").delete().eq("id", existingPending.id);
+        // Also clean up any orphaned ingestion_jobs for this hash/user
+        await admin.from("ingestion_jobs").delete().eq("pdf_hash", clientHash).eq("user_id", user.id);
+      } else {
+        console.log("[ingest] active pending record — user is mid-pipeline:", clientHash, "| races_extracted:", racesExtracted.length);
+        return json({ status: "ready", message: "Got it — ready to analyze." });
+      }
     }
 
     // Step 1: All ingestion_log rows for this hash (successful/partial extractions only)
