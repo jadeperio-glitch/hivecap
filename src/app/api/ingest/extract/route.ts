@@ -36,6 +36,13 @@ EXTRACTION ORDER:
 2. Then extract each horse within that race context (name, connections, figures, fractions, finish, trip notes)
 3. Then extract narrative content (trainer quotes, barn notes, trip notes) into notes fields
 
+FOR PAST PERFORMANCE SHEETS:
+- The document shows an upcoming race entry at the top, followed by each horse's prior race history (PP lines)
+- Extract the upcoming race context (track, date, distance, surface, class) as the race record
+- For each horse, ALSO extract their most recent prior race performance from the PP history lines below their entry — this includes: Beyer figure, fractional splits, finish position, final time, running style, trip notes from their last start
+- Store the prior race performance as a separate performance record linked to the horse — use the date, track, and race details from that PP line as the race context
+- Never leave Beyer figures, fractions, or finish positions null if they appear anywhere in the document for that horse
+
 DOCUMENT TYPE DETECTION:
 - If this is a past performance sheet: follow full extraction protocol
 - If this is a result chart, race card, clocker report, or workout tab: extract what maps to the schema, flag document_type in response
