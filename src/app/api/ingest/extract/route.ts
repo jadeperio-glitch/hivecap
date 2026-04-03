@@ -119,6 +119,7 @@ HARD RULES:
 - notes fields are for narrative overflow only. Do not put structured data in notes.
 - If the document contains multiple races for the same horse (full PP history), extract the MOST RECENT race as the primary record and note additional races in extraction_flags.
 - For workout tabs or workout sections within a PP sheet: extract the 3 most recent workouts only. Ignore all earlier workout entries.
+- For odds fields: morning line odds are expressed as X-1 (e.g. 5-1, 12-1, 3-2). Store as a decimal multiplier — 5-1 = 5.0, 12-1 = 12.0, 3-2 = 1.5, even money = 1.0. Never store odds below 0.5 for a horse race — if you calculate a value below 0.5 you have made an error, flag it in extraction_flags and return null instead.
 
 Return only the JSON object. No preamble, no explanation, no markdown fences.`;
 
@@ -615,6 +616,16 @@ export async function POST(request: Request) {
           .maybeSingle();
 
         const perf = horseData.performance;
+
+        // Validate odds — any value below 0.5 is a parsing error (e.g. 12-1 misread as 1/2).
+        // Null it out and flag rather than writing bad data to the schema.
+        if (perf.odds !== null && perf.odds !== undefined && perf.odds < 0.5) {
+          flags.push({
+            field: "odds_suspicious",
+            note: `Odds value ${perf.odds} is below 0.5 — likely a parsing error (fractional odds misread). Set to null.`,
+          });
+          perf.odds = null;
+        }
 
         if (existingPerf) {
           const existingPriority = sourcePriority(existingPerf.source);
