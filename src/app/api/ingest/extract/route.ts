@@ -119,7 +119,22 @@ HARD RULES:
 - notes fields are for narrative overflow only. Do not put structured data in notes.
 - If the document contains multiple races for the same horse (full PP history), extract the MOST RECENT race as the primary record and note additional races in extraction_flags.
 - For workout tabs or workout sections within a PP sheet: extract the 3 most recent workouts only. Ignore all earlier workout entries.
-- For odds fields: morning line odds are expressed as X-1 (e.g. 5-1, 12-1, 3-2). Store as a decimal multiplier — 5-1 = 5.0, 12-1 = 12.0, 3-2 = 1.5, even money = 1.0. Never store odds below 0.5 for a horse race — if you calculate a value below 0.5 you have made an error, flag it in extraction_flags and return null instead.
+- MORNING LINE ODDS — CRITICAL:
+  - Morning line odds on a PP sheet appear in a dedicated column, typically labeled 'ML' or 'Morn Line'
+  - They are expressed as: 5-1, 12-1, 30-1, 9-5, 7-2, even (meaning 1-1)
+  - Read the EXACT number from the ML column for each horse — do not calculate or derive it
+  - Convert to decimal:
+    - 5-1 → 5.0
+    - 12-1 → 12.0
+    - 30-1 → 30.0
+    - 9-5 → 1.8
+    - 7-2 → 3.5
+    - even → 1.0
+    - 1-2 → 0.5
+  - The favorite has the LOWEST odds number
+  - Longshots have HIGH odds numbers (20+)
+  - NEVER return odds below 0.5 unless the horse is a prohibitive favorite
+  - If you cannot clearly identify the ML column, return null for all odds and add extraction_flag: 'ml_column_not_found'
 
 Return only the JSON object. No preamble, no explanation, no markdown fences.`;
 
@@ -427,6 +442,11 @@ export async function POST(request: Request) {
           : `We couldn't process race ${race_index}. The response from the AI was malformed. Please try again.`,
       });
     }
+
+    // Diagnostic: log raw odds from Claude before any validation or DB writes
+    console.log("[ingest/extract] raw odds from Claude:",
+      extraction.horses?.map((h) => ({ name: h.name, odds: h.performance?.odds }))
+    );
 
     // Handle unrecognized / race_not_found statuses
     if (extraction.status === "unrecognized") {
