@@ -240,12 +240,12 @@ export default function BrainPage() {
         throw new Error(data.error || `HTTP ${res.status}`);
       }
 
-      if (data.duplicate) {
-        // Step 2a: Duplicate detected — file never moved, surface to user
+      if (data.status === "ready") {
+        // Step 2a: Dedup hit — Brain already has this document, no pending_document_id
         setUploadStatus("done");
         setMessages((prev) => [
           ...prev,
-          { role: "assistant", content: data.message ?? "Brain already has this document." },
+          { role: "assistant", content: data.message ?? "Got it — ready to analyze." },
         ]);
         setTimeout(() => setUploadStatus("idle"), 3000);
         return;
@@ -258,7 +258,7 @@ export default function BrainPage() {
 
       const totalRaces: number = data.total_races ?? 1;
       const trackLabel = data.track_name ?? "the track";
-      const dateLabel = data.race_date ? ` on ${data.race_date}` : "";
+      const dateLabel = data.race_date ? ` on ${formatRaceDate(data.race_date)}` : "";
       const docType: string = data.document_type ?? "document";
 
       setPendingIngestion({
