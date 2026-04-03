@@ -75,7 +75,7 @@ function extractQueryTerms(query: string): string[] {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Build structured context from horses/races/performance/connections tables.
-// Returns empty string if no data found (triggers user_documents fallback).
+// Returns empty string if no horses found for this user.
 // ─────────────────────────────────────────────────────────────────────────────
 async function buildSchemaContext(
   userId: string,

@@ -793,38 +793,6 @@ export async function POST(request: Request) {
       })
       .eq("id", pending_document_id);
 
-    // ── Backward compat: insert into user_documents for Brain context ─────────
-    // The Brain context injection currently reads user_documents. We insert a
-    // formatted summary here so new extractions are visible in Brain responses.
-    // This is removed when the Brain context query is updated to use the schema.
-    const primaryHorse = extraction.horses[0];
-    if (primaryHorse && raceData) {
-      const summaryLines = [
-        `Horse: ${primaryHorse.name}`,
-        raceData.track_name ? `Track: ${raceData.track_name}` : null,
-        raceData.race_date ? `Date: ${raceData.race_date}` : null,
-        `Race: ${raceData.race_number}`,
-        raceData.distance ? `Distance: ${raceData.distance} ${raceData.surface ?? ""}`.trim() : null,
-        raceData.condition ? `Condition: ${raceData.condition}` : null,
-        raceData.class_level ? `Class: ${raceData.class_level}` : null,
-        primaryHorse.trainer ? `Trainer: ${primaryHorse.trainer}` : null,
-        primaryHorse.jockey ? `Jockey: ${primaryHorse.jockey}` : null,
-        primaryHorse.performance.finish_position != null ? `Finish: ${primaryHorse.performance.finish_position}` : null,
-        primaryHorse.performance.beyer_figure != null ? `Beyer: ${primaryHorse.performance.beyer_figure} (${primaryHorse.performance.beyer_source ?? "user_upload"})` : null,
-        primaryHorse.performance.final_time ? `Final time: ${primaryHorse.performance.final_time}` : null,
-        primaryHorse.performance.trip_notes ? `Trip: ${primaryHorse.performance.trip_notes}` : null,
-        primaryHorse.notes ? `Notes: ${primaryHorse.notes}` : null,
-      ].filter(Boolean);
-
-      await admin.from("user_documents").insert({
-        user_id: user.id,
-        filename: `Brain extract: ${primaryHorse.name} — Race ${raceData.race_number} ${raceData.race_date ?? ""}`.trim(),
-        extracted_text: summaryLines.join("\n"),
-      }).then(({ error: docErr }) => {
-        if (docErr) console.warn("[ingest/extract] user_documents compat insert failed:", docErr.message);
-      });
-    }
-
     console.log(
       `[ingest/extract] race ${race_index}/${pendingDoc.total_races} — status: ${finalStatus} | horses: ${results.length} | flags: ${flags.length}`,
     );
