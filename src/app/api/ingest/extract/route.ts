@@ -235,6 +235,7 @@ function isValidExtraction(obj: unknown): obj is ExtractionResult {
 // Steps 3–10 for one race.
 // ─────────────────────────────────────────────────────────────────────────────
 export async function POST(request: Request) {
+  console.log("[ingest/extract] env check — admin ids:", process.env.HIVECAP_ADMIN_USER_IDS ?? "NOT SET");
   try {
     // ── Auth ──────────────────────────────────────────────────────────────────
     const supabase = createClient();
@@ -346,7 +347,7 @@ export async function POST(request: Request) {
     try {
       const extractResponse = await anthropic.messages.create({
         model: "claude-sonnet-4-5",
-        max_tokens: 4096,
+        max_tokens: 8192,
         system: systemPrompt,
         messages: [
           {
