@@ -6,18 +6,22 @@ const client = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-const BASE_PROMPT = `You are the HiveCap Brain — an expert horse racing analyst. You specialize in:
-- Beyer Speed Figures and pace analysis
-- Pedigree research and trip notes
-- Wagering strategy (exactas, trifectas, Pick 4/5/6)
-- The 2026 Kentucky Derby field and contenders
-- Track bias, trainer patterns, and jockey statistics
+const BASE_PROMPT = `You are the HiveCap Brain — an expert horse racing analyst with deep knowledge of handicapping, wagering strategy, and the thoroughbred industry.
 
-You never reproduce copyrighted content verbatim — you always analyze, summarize, and provide original insights. You are precise, confident, and data-driven. When discussing horses, lead with the most analytically relevant factors.`;
+**Knowledge hierarchy — trust from highest to lowest:**
+1. Brain Knowledge Base (extracted from official past performance documents) — treat as ground truth
+2. Community Intelligence (verified posts from HiveCap users) — treat as analyst notes
+3. Web search results — use to fill gaps, verify, or extend Brain data
+4. Your own training knowledge — always your foundation; apply when no other source covers the question
 
-// Returned verbatim when the schema context is empty — Claude is never called.
-const NO_DATA_RESPONSE =
-  "I don't have data on this in your Brain. Upload a past performance for this race or check if another user has posted analysis.";
+**Behavior rules:**
+- Never say "I don't have that information" or "I can't find that" before using web_search to look it up. Search first, then answer.
+- When Brain data and web search results conflict, surface both and flag the discrepancy: state which source you trust more and why.
+- When Brain data is present, lead with it. Supplement with web search for current conditions, recent workouts, scratches, or anything the Brain doesn't cover.
+- When Brain data is absent, answer from your expertise and web search. Never refuse a racing question solely because no Brain data was uploaded.
+- You specialize in: Beyer Speed Figures and pace analysis, pedigree research and trip notes, wagering strategy (exactas, trifectas, Pick 4/5/6), the 2026 Kentucky Derby field and contenders, track bias, trainer patterns, and jockey statistics.
+- You never reproduce copyrighted content verbatim — always analyze, summarize, and provide original insights.
+- You are precise, confident, and data-driven. When discussing horses, lead with the most analytically relevant factors.`;
 
 // UI state messages injected by the ingestion pipeline — never pass to Claude.
 // These are assistant turns that reflect pipeline state, not conversation content.
@@ -34,11 +38,6 @@ function isUiStateMessage(content: string): boolean {
   return UI_STATE_PATTERNS.some((p) => p.test(content.trimStart()));
 }
 
-// Injected into the system prompt only when context IS present.
-const CONTEXT_INSTRUCTION =
-  "Answer only from the data in the Brain Knowledge Base section above. " +
-  "If the answer is not in that data, say: \"I don't have that specific information in your Brain.\" " +
-  "Do not speculate. Do not use general knowledge. Do not invent horses, odds, figures, positions, or race details under any circumstances.";
 
 export const runtime = "nodejs";
 
@@ -457,7 +456,7 @@ export async function POST(request: Request) {
     if (userId) {
       try {
         schemaContext = await buildSchemaContext(userId, user_message ?? "", admin);
-        console.log("[brain] final schema context chars:", schemaContext.length, "| gate will", schemaContext ? "PASS — calling Claude" : "BLOCK — returning no-data response");
+        console.log("[brain] final schema context chars:", schemaContext.length);
       } catch (err) {
         console.error("[brain] schema context query failed:", (err as Error).message);
       }
@@ -504,53 +503,12 @@ export async function POST(request: Request) {
         });
     }
 
-    // ── Code-level context gate ────────────────────────────────────────────────
-    // Gate fires when schema is empty AND no community posts are relevant to the
-    // query. Presence of unrelated community posts does not pass the gate —
-    // relevance to the user's query is required.
-    if (!schemaContext && !relevantCommunityContext) {
-      console.log("[brain] no schema context — returning no-data gate response");
-
-      // Persist the gate response as an assistant message so conversation history is clean
-      if (userId && activeConvId) {
-        const supabase = createClient();
-        supabase.from("messages").insert({
-          conversation_id: activeConvId,
-          user_id: userId,
-          role: "assistant",
-          content: NO_DATA_RESPONSE,
-        }).then(({ error }) => {
-          if (error) console.error("[brain] Failed to save no-data gate message:", error.message);
-        });
-      }
-
-      const encoder = new TextEncoder();
-      return new Response(
-        new ReadableStream({
-          start(controller) {
-            controller.enqueue(encoder.encode(NO_DATA_RESPONSE));
-            controller.close();
-          },
-        }),
-        {
-          headers: {
-            "Content-Type": "text/plain; charset=utf-8",
-            "Transfer-Encoding": "chunked",
-            "X-Content-Type-Options": "nosniff",
-            ...(activeConvId ? { "X-Conversation-Id": activeConvId } : {}),
-          },
-        },
-      );
-    }
-
     // ── Build system prompt ────────────────────────────────────────────────────
-    // Context is present — pass schema + community intel to Claude.
-    // When schema is present: include all community posts (supplementary signal).
-    // When schema is absent: include only query-relevant community posts so
-    // Claude cannot cite unrelated posts as if they answered the question.
-    const contextParts: string[] = [BASE_PROMPT, schemaContext, CONTEXT_INSTRUCTION];
+    // Brain Knowledge Base (highest trust) + Community Intelligence (second tier).
     // When schema is present: cap at 3 relevant posts at 200 chars — schema dominates.
-    // When schema is absent: full relevant post list at 300 chars (gate already filtered).
+    // When schema is absent: full relevant post list at 300 chars.
+    const contextParts: string[] = [BASE_PROMPT];
+    if (schemaContext) contextParts.push(schemaContext);
     const communityForClaude = schemaContext ? cappedCommunityContext : relevantCommunityContext;
     if (communityForClaude) {
       contextParts.push(communityForClaude);
@@ -583,7 +541,7 @@ export async function POST(request: Request) {
     }
 
     // ── Stream ─────────────────────────────────────────────────────────────────
-    const model = "claude-sonnet-4-5";
+    const model = "claude-sonnet-4-6";
     console.log("[brain] prompt budget — system:", systemPrompt.length, "chars | schema:", schemaContext.length, "chars | community:", sharedIntelligenceContext.length, "chars | messages:", anthropicMessages.length);
 
     let stream: AsyncIterable<{ type: string; delta?: { type: string; text?: string } }>;
@@ -593,6 +551,7 @@ export async function POST(request: Request) {
         max_tokens: 2048,
         system: systemPrompt,
         messages: anthropicMessages,
+        tools: [{ type: "web_search_20250305" as const, name: "web_search" }],
         stream: true,
       }) as AsyncIterable<{ type: string; delta?: { type: string; text?: string } }>;
     } catch (anthropicErr) {
@@ -620,14 +579,13 @@ export async function POST(request: Request) {
         let fullText = "";
         try {
           for await (const chunk of stream) {
-            if (
-              chunk.type === "content_block_delta" &&
-              chunk.delta?.type === "text_delta" &&
-              chunk.delta.text
-            ) {
-              fullText += chunk.delta.text;
-              controller.enqueue(encoder.encode(chunk.delta.text));
-            }
+            // Only forward text deltas to the client.
+            // Skip input_json_delta (tool call arguments) and all other non-text events.
+            if (chunk.type !== "content_block_delta") continue;
+            if (chunk.delta?.type !== "text_delta") continue;
+            if (!chunk.delta.text) continue;
+            fullText += chunk.delta.text;
+            controller.enqueue(encoder.encode(chunk.delta.text));
           }
           controller.close();
         } catch (err) {
@@ -639,6 +597,8 @@ export async function POST(request: Request) {
         }
 
         // ── Persist assistant message + bump conversation updated_at ───────────
+        // fullText contains only accumulated text_delta content — tool_use blocks
+        // are never included, so it is always safe to insert as a plain string.
         if (capturedUserId && capturedConvId && fullText) {
           try {
             const supabase = createClient();

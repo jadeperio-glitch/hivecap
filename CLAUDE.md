@@ -11,7 +11,7 @@ AI-powered horse racing intelligence platform. Beta launch anchored to Kentucky 
 - **Framework:** Next.js 14 (App Router)
 - **Hosting:** Vercel (GitHub connected)
 - **Database:** Supabase — project URL: `https://dptzgdtytmnknordnglb.supabase.co`
-- **AI:** Anthropic Claude API (`@anthropic-ai/sdk ^0.27`, model `claude-sonnet-4-5`)
+- **AI:** Anthropic Claude API (`@anthropic-ai/sdk ^0.27`, model `claude-sonnet-4-6`)
 - **Auth:** Supabase Auth — open signup (invite code gate removed 2026-04-03)
 - **Theming:** next-themes (defaults to dark, class-based)
 

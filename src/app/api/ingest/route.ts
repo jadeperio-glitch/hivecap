@@ -196,7 +196,7 @@ export async function POST(request: Request) {
 
     try {
       const scanResponse = await anthropic.messages.create({
-        model: "claude-sonnet-4-5",
+        model: "claude-sonnet-4-6",
         max_tokens: 256,
         system: SCAN_SYSTEM,
         messages: [
