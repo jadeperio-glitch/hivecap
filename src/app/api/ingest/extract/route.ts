@@ -336,6 +336,12 @@ export async function POST(request: Request) {
     // ── Step 3: Claude extraction call ────────────────────────────────────────
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+    // Admin bypass: users in HIVECAP_ADMIN_USER_IDS get no text truncation.
+    const adminIds = (process.env.HIVECAP_ADMIN_USER_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    const isAdmin = adminIds.includes(user.id);
+    const textLimit = isAdmin ? extractedText.length : 12000;
+    console.log("[ingest/extract] user:", user.id, "| admin:", isAdmin, "| text length:", extractedText.length, "| sending:", Math.min(extractedText.length, textLimit), "chars");
+
     let extraction: ExtractionResult;
     try {
       const extractResponse = await anthropic.messages.create({
@@ -345,7 +351,7 @@ export async function POST(request: Request) {
         messages: [
           {
             role: "user",
-            content: `Extract race ${race_index} of ${pendingDoc.total_races} from this document:\n\n${extractedText.slice(0, 6000)}`,
+            content: `Extract race ${race_index} of ${pendingDoc.total_races} from this document:\n\n${extractedText.slice(0, textLimit)}`,
           },
         ],
       });
