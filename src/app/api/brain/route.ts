@@ -370,11 +370,11 @@ export async function POST(request: Request) {
     const admin = createAdminClient();
 
     // ── Shared community intelligence (Rule D) ─────────────────────────────────
-    // sharedIntelligenceContext — all verified posts (used when schema is present).
-    // relevantCommunityContext  — only posts matching the user's query terms
-    //   (used for the gate check and as Claude's community input when schema is absent).
+    // relevantCommunityContext — query-relevant posts at 300 chars (gate check + no-schema Claude input)
+    // cappedCommunityContext   — top 3 query-relevant posts at 200 chars (schema-present Claude input)
     let sharedIntelligenceContext = "";
     let relevantCommunityContext = "";
+    let cappedCommunityContext = "";
     try {
       const { data: sharedPosts, error: sharedErr } = await admin
         .from("posts")
@@ -386,43 +386,46 @@ export async function POST(request: Request) {
       if (sharedErr) {
         console.error("[brain] shared posts query error:", sharedErr.message);
       } else if (sharedPosts && sharedPosts.length > 0) {
-        const POST_MAX = 300;
         const COMMUNITY_HEADER =
           `--- Community Intelligence — publicly shared findings from HiveCap users ---\n` +
           `The following posts were verified by the Brain and shared by the community. ` +
           `Treat them as supplementary analyst notes — useful signal, but defer to the ` +
           `extracted Knowledge Base and the user's own analysis when they conflict.\n\n`;
 
-        const entries = sharedPosts.map((p) => {
+        const makeEntry = (p: typeof sharedPosts[number], maxChars: number) => {
           const author = p.username ?? p.user_email;
           const date = new Date(p.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-          const body = p.content.length > POST_MAX ? p.content.slice(0, POST_MAX) + "…" : p.content;
+          const body = p.content.length > maxChars ? p.content.slice(0, maxChars) + "…" : p.content;
           return `[${author} · ${date}]\n${body}`;
-        });
+        };
 
-        sharedIntelligenceContext = COMMUNITY_HEADER + entries.join("\n\n");
+        const entries300 = sharedPosts.map((p) => makeEntry(p, 300));
+        sharedIntelligenceContext = COMMUNITY_HEADER + entries300.join("\n\n");
 
-        // Relevance filter: only keep posts that mention terms from the user's query.
-        // Uses extractQueryTerms (capitalized names) plus a 4+ char word fallback
-        // so lowercased horse/race names in the query still match.
+        // Relevance filter — minimum match term length of 6 chars to exclude generic
+        // words like "Derby" (5), "Race" (4), "Stakes" (6 — borderline, kept for specificity).
+        // This prevents posts about Arkansas Derby bleeding into Wood Memorial queries.
         const queryTerms = extractQueryTerms(user_message ?? "");
         const queryWords = (user_message ?? "")
           .toLowerCase()
           .split(/\s+/)
           .map((w) => w.replace(/[^a-z]/g, ""))
-          .filter((w) => w.length >= 4);
+          .filter((w) => w.length >= 6);
 
-        const relevantEntries = entries.filter((entry) => {
-          const entryLower = entry.toLowerCase();
-          if (queryTerms.some((t) => entryLower.includes(t.toLowerCase()))) return true;
+        const relevantPosts = sharedPosts.filter((_, i) => {
+          const entryLower = entries300[i].toLowerCase();
+          const termMatch = queryTerms.some((t) => t.length >= 6 && entryLower.includes(t.toLowerCase()));
+          if (termMatch) return true;
           return queryWords.some((w) => entryLower.includes(w));
         });
 
-        if (relevantEntries.length > 0) {
-          relevantCommunityContext = COMMUNITY_HEADER + relevantEntries.join("\n\n");
+        if (relevantPosts.length > 0) {
+          relevantCommunityContext = COMMUNITY_HEADER + relevantPosts.map((p) => makeEntry(p, 300)).join("\n\n");
+          // Schema-present cap: 3 most relevant posts at 200 chars each — schema data dominates
+          cappedCommunityContext = COMMUNITY_HEADER + relevantPosts.slice(0, 3).map((p) => makeEntry(p, 200)).join("\n\n");
         }
 
-        console.log("[brain] community posts — total:", sharedPosts.length, "| relevant to query:", relevantEntries.length);
+        console.log("[brain] community posts — total:", sharedPosts.length, "| relevant to query:", relevantPosts.length);
       }
     } catch (err) {
       const e = err as Error & { cause?: unknown };
@@ -546,7 +549,9 @@ export async function POST(request: Request) {
     // When schema is absent: include only query-relevant community posts so
     // Claude cannot cite unrelated posts as if they answered the question.
     const contextParts: string[] = [BASE_PROMPT, schemaContext, CONTEXT_INSTRUCTION];
-    const communityForClaude = schemaContext ? sharedIntelligenceContext : relevantCommunityContext;
+    // When schema is present: cap at 3 relevant posts at 200 chars — schema dominates.
+    // When schema is absent: full relevant post list at 300 chars (gate already filtered).
+    const communityForClaude = schemaContext ? cappedCommunityContext : relevantCommunityContext;
     if (communityForClaude) {
       contextParts.push(communityForClaude);
     }
