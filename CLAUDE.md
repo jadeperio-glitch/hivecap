@@ -2,7 +2,7 @@
 
 ## What this is
 
-AI-powered horse racing intelligence platform. Beta launch anchored to Kentucky Derby 2026 (May 3, 2026). Invite-only, 4–8 beta users. Tagline: "The Sharpest Mind at the Window."
+AI-powered horse racing intelligence platform. Beta launch anchored to Kentucky Derby 2026 (May 3, 2026). Open signup. Tagline: "The Sharpest Mind at the Window."
 
 ---
 
@@ -12,48 +12,50 @@ AI-powered horse racing intelligence platform. Beta launch anchored to Kentucky 
 - **Hosting:** Vercel (GitHub connected)
 - **Database:** Supabase — project URL: `https://dptzgdtytmnknordnglb.supabase.co`
 - **AI:** Anthropic Claude API (`@anthropic-ai/sdk ^0.27`, model `claude-sonnet-4-5`)
-- **Auth:** Supabase Auth with invite code gate (code: `maxplayer`)
+- **Auth:** Supabase Auth — open signup (invite code gate removed 2026-04-03)
 - **Theming:** next-themes (defaults to dark, class-based)
 
 ---
 
 ## MVP Scope — ALL COMPLETE
 
-1. User auth with invite code gate — **DONE**
+1. User auth — **DONE**
 2. Brain chat interface (Claude API) — **DONE**
 3. Document upload to Brain — **DONE**
 4. Community feed with posting — **DONE**
 
 ---
 
-## Current build status (as of 2026-04-02)
+## Current build status (as of 2026-04-03)
 
 ### Pages
 
 - `src/app/page.tsx` — landing page; async server component; nav adapts to auth state (Go to Brain vs Sign In + Get Access); Community Feed link visible to all
 - `src/app/login/page.tsx` — Supabase signInWithPassword, redirects to `/brain`
-- `src/app/signup/page.tsx` — invite code gate (`maxplayer`), username field (3–20 chars, `[a-zA-Z0-9_]`), Supabase signUp + immediate signIn, profile insert, redirects to `/brain`
-- `src/app/brain/page.tsx` — streaming chat UI with typing indicator, auth guard, PDF drag-and-drop upload (ingestion pipeline flow — see below), document panel, conversation persistence (load most recent on page load), "Post to Feed" modal, nav links to Settings / Community Feed / Sign out; SHA-256 hash computed client-side before upload; after scan, Brain injects race-count prompt into chat and renders inline race selector buttons; `pendingIngestion` state tracks races_pending / races_extracted until all done or dismissed
-- `src/app/feed/page.tsx` — community feed; compose box with brain_verified toggle + project selector; collapsed post cards (100-char preview, click to expand); real-time client-side search/filter; Brain badge on verified posts
+- `src/app/signup/page.tsx` — open signup; username field (3–20 chars, `[a-zA-Z0-9_]`), Supabase signUp + immediate signIn, profile insert, redirects to `/brain`
+- `src/app/brain/page.tsx` — streaming chat UI with typing indicator, auth guard, PDF drag-and-drop upload (ingestion pipeline flow — see below), document panel, conversation persistence (load most recent on page load), "Post to Feed" modal, nav links to Settings / Community Feed / Sign out; SHA-256 hash computed client-side before upload; after scan, Brain injects race-count prompt into chat and renders inline race selector buttons with actual race number + track + date labels; `pendingIngestion` state tracks races_pending / races_extracted until all done or dismissed
+- `src/app/feed/page.tsx` — community feed; compose box with brain_verified toggle + project selector; 2000 char limit (none for admin); collapsed post cards (100-char preview, click to expand); real-time client-side search/filter; Brain badge on verified posts
 - `src/app/settings/page.tsx` — auth-guarded settings; three sections: Identity (edit username, read-only email, change password), Brain (list + delete user_documents), Account (Delete Account with DELETE confirmation modal)
 
 ### API routes
 
-- `src/app/api/brain/route.ts` — Claude streaming route; uses `messages.create({ stream: true })` (real Promise — API errors caught before response is returned); token budget enforced: 10 community posts × 300 chars, 5 docs × 3,000 chars, last 10 messages; full conversation persistence; returns `X-Conversation-Id` header; logs prompt budget on every request; context injection still reads `user_documents` (compat bridge — see ingestion section)
-- `src/app/api/ingest/route.ts` — **new** PDF ingestion entry point (Steps 1–2b); receives `file` + client-computed `hash` (SHA-256); dedup check against `ingestion_log.pdf_hash`; lightweight Claude scan (doc type + race count + race date + track, 256 tokens); uploads extracted text to Supabase Storage `brain-ingestion/{user_id}/{hash}.txt`; inserts `pending_documents` + N `ingestion_jobs` (status: queued); returns `{ pending_document_id, document_type, total_races, race_date, track_name, races_pending }`
-- `src/app/api/ingest/extract/route.ts` — **new** per-race extraction (Steps 3–10); receives `{ pending_document_id, race_index }`; downloads extracted text from storage; calls Claude with primary prompt (race 1) or follow-up prompt with horse context (races 2–N); validates JSON before any write; race resolution → horse resolution (merge logic) → performance write (source priority) → connections upsert; updates `ingestion_jobs` + `ingestion_log` + `pending_documents`; also inserts formatted summary into `user_documents` for Brain context compat; returns `{ status, message, races_extracted, races_pending }`
-- `src/app/api/posts/route.ts` — GET (all posts DESC, returns `username`); POST (auth-gated, looks up username from profiles, stores `username` + `user_email`, max 2000 chars)
-- `src/app/api/upload/route.ts` — **legacy** PDF upload; `pdf-parse@1.1.1` via `require("pdf-parse/lib/pdf-parse.js")`; stores extracted text in `user_documents`; not used by brain/page.tsx (replaced by /api/ingest flow) but left in place
+- `src/app/api/brain/route.ts` — Claude streaming route; uses `messages.create({ stream: true })`; `buildSchemaContext` queries horses + performance + connections from structured schema (single batch performance query, no N+1); relevance-scoped community posts (query-matched only, max 3 when schema present, 6+ char term threshold); hard code-level no-data gate (no schema context AND no relevant community posts → fixed response, Claude never called); UI state messages filtered from conversation history; full conversation persistence; returns `X-Conversation-Id` header
+- `src/app/api/ingest/route.ts` — PDF ingestion entry point (Steps 1–2b); receives `file` + client-computed `hash` (SHA-256); three-branch ownership dedup (Branch A: own → accept, Branch B: shared → accept, Branch C: other-user personal → allow full extraction); stale pending record cleanup (expired or stuck >2h with 0 races extracted → delete + allow fresh upload); lightweight Claude scan (doc type + race count + race date + track + actual race numbers, 256 tokens); extracted text uploaded to Supabase Storage; inserts `pending_documents` + N `ingestion_jobs`; returns `{ pending_document_id, document_type, total_races, race_numbers, race_date, track_name, races_pending }`
+- `src/app/api/ingest/extract/route.ts` — per-race extraction (Steps 3–10); admin check at entry (isAdmin, brainLayer, textLimit); downloads extracted text from storage; PRIMARY_SYSTEM prompt with explicit odds parsing rules (ML column, decimal conversion table) and PP history extraction instructions; max_tokens 8192; post-extraction odds validation (< 0.5 nulled + flagged); race resolution → horse resolution (sire/dam conflict detection, tentative merge if pedigree absent) → performance write (source priority) → connections upsert; admin writes brain_layer='shared', non-admin writes brain_layer='personal'; admin uploads upgrade existing personal horse rows to shared; updates ingestion_jobs + ingestion_log + pending_documents; inserts formatted summary into user_documents (compat bridge — PENDING REMOVAL); returns `{ status, message, races_extracted, races_pending }`
+- `src/app/api/posts/route.ts` — GET (all posts DESC); POST (auth-gated, max 2000 chars for non-admin, unlimited for admin)
+- `src/app/api/user/role/route.ts` — GET; server-side admin check against `HIVECAP_ADMIN_USER_IDS`; returns `{ isAdmin: boolean }`; used by client components
+- `src/app/api/racing/entries/diagnostic/route.ts` — GET diagnostic; calls NA meets → finds target track → tries Path B (NA entries endpoint) then falls back to Path A (/v1/racecards); returns raw response + `path_used`; params: `?date=YYYY-MM-DD&track=<name>`
+- `src/app/api/upload/route.ts` — **legacy** PDF upload; not used by brain/page.tsx (replaced by /api/ingest flow) but left in place
 - `src/app/api/results/route.ts` — The Racing API proxy (North America meets/entries/results)
-- `src/app/api/account/delete/route.ts` — authenticated DELETE; uses admin client (service role key); explicit ordered deletes: messages → conversations → posts → user_documents → profile → auth.admin.deleteUser
-- `src/app/api/health/route.ts` — GET; checks all env vars (presence only, no values exposed), live Supabase admin query, anon client connectivity; returns `{ healthy, env, supabase, supabase_anon }` — use for diagnosing 500s
+- `src/app/api/account/delete/route.ts` — authenticated DELETE; explicit ordered deletes: messages → conversations → posts → user_documents → profile → auth.admin.deleteUser
+- `src/app/api/health/route.ts` — GET; checks all env vars (presence only), live Supabase connectivity; returns `{ healthy, env, supabase, supabase_anon }`
 
 ### Lib
 
 - `src/lib/supabase/client.ts` — browser client (createBrowserClient)
 - `src/lib/supabase/server.ts` — server client (createServerClient + cookies())
 - `src/lib/supabase/admin.ts` — admin client (service role key, no session persistence)
-- `src/lib/racing-api.ts` — typed Racing API client; confirmed North America path: `/v1/north-america/meets` (hyphen); functions: `getNorthAmericaMeets`, `getNorthAmericaEntries`, `getNorthAmericaResults`
+- `src/lib/racing-api.ts` — typed Racing API client; confirmed North America path: `/v1/north-america/meets`; functions: `getNorthAmericaMeets`, `getNorthAmericaEntries`, `getNorthAmericaResults`, `getResults`, `getRacecard`, `getUpcomingRaces`
 
 ### Components
 
@@ -73,7 +75,7 @@ All migrations in `supabase/migrations/`. Run each in Supabase SQL Editor in ord
 
 ### Storage
 
-**`brain-ingestion`** bucket (`20260402_brain_schema.sql`) — holds extracted text files (not raw PDFs) at path `{user_id}/{pdf_hash}.txt`; private; per-user RLS; expires via `pending_documents.expires_at` (rows purged by pipeline, not bucket policy)
+**`brain-ingestion`** bucket (`20260402_brain_schema.sql`) — holds extracted text files (not raw PDFs) at path `{user_id}/{pdf_hash}.txt`; private; per-user RLS; expires via `pending_documents.expires_at`
 
 ### MVP tables
 
@@ -101,7 +103,7 @@ All migrations in `supabase/migrations/`. Run each in Supabase SQL Editor in ord
 **`user_documents`** (`20260327_projects.sql`)
 - `id, user_id, filename, extracted_text, project_id (nullable), created_at`
 - RLS: full CRUD scoped to owner
-- **Role going forward:** compat bridge — `/api/ingest/extract` inserts a formatted summary here after each extraction so `brain/route.ts` context injection continues to work unchanged. Will be replaced when Brain context query is updated to read structured schema directly.
+- **Role going forward:** compat bridge only — `/api/ingest/extract` inserts a formatted summary here after each extraction so `brain/route.ts` context injection continues to work. PENDING REMOVAL when Brain context query is updated to read structured schema directly.
 
 **`posts`** (`20260327_posts.sql` + `20260327_profiles.sql`)
 - `id, user_id, user_email, username (nullable), project_id (nullable), conversation_id (nullable), content, brain_verified, created_at`
@@ -123,34 +125,77 @@ All migrations in `supabase/migrations/`. Run each in Supabase SQL Editor in ord
 
 **`brain_posts`** — Rule D write-back (separate from `posts` table); `user_id, content, brain_generated boolean, migrated_to_shared boolean, horse_id FK→horses (nullable), race_id FK→races (nullable), paywalled boolean`
 
-**`ingestion_log`** — audit trail and dedup anchor; every write logged here regardless of outcome; `user_id, source, source_ref, pdf_hash, horse_id FK→horses, race_id FK→races, status (success|partial|failed), notes`; `pdf_hash` is the SHA-256 checked in Step 2a — duplicate hash with status=success short-circuits all extraction
+**`ingestion_log`** — audit trail and dedup anchor; every write logged here regardless of outcome; `user_id, source, source_ref, pdf_hash, horse_id FK→horses, race_id FK→races, status (success|partial|failed), notes`
 
-**`pending_documents`** — holds scan results until fully extracted or expired; `user_id, pdf_hash, document_type, total_races, race_date, races_extracted integer[], races_pending integer[], storage_ref, expires_at`; `expires_at = MAX(race_date, created_at) + 24 hours`; extracted schema rows never expire — only this reference falls away; RLS: scoped to owner
+**`pending_documents`** — holds scan results until fully extracted or expired; `user_id, pdf_hash, document_type, total_races, race_date, races_extracted integer[], races_pending integer[], storage_ref, expires_at`; `expires_at = MAX(race_date end-of-day UTC, created_at) + 24 hours`; extracted schema rows never expire — only this reference falls away; RLS: scoped to owner
 
-**`ingestion_jobs`** — one row per race per document; `ingestion_log_id FK→ingestion_log (nullable, set after Step 9), user_id, pdf_hash, race_index, total_races, status (queued|processing|success|partial|failed), error_notes`; jobs are isolated — failure on one does not affect others; RLS: scoped to owner
+**`ingestion_jobs`** — one row per race per document; `ingestion_log_id FK→ingestion_log (nullable), user_id, pdf_hash, race_index, total_races, status (queued|processing|success|partial|failed), error_notes`; jobs are isolated; RLS: scoped to owner
 
 ---
 
-## Rule D — Shared Brain layer (LIVE)
+## Admin seeding model (LIVE)
 
-`brain_verified` posts from the community feed are injected into every Brain request as "Community Intelligence." System prompt order:
+Two admin UUIDs set in `HIVECAP_ADMIN_USER_IDS` Vercel env var:
+- `c362dc55-2d4e-4f17-9c46-bad0299e836e`
+- `d1bc8479-d6c6-4fbd-a116-a695157acb6c`
 
-1. Base persona
-2. Community Intelligence (10 most recent `brain_verified` posts, each truncated to 300 chars — ≤3,000 chars total, fetched via admin client)
-3. Personal Documents (5 most recent docs from `user_documents`, each truncated to 3,000 chars — ≤15,000 chars total, labeled as higher priority)
-4. Document instruction
+Admin privileges:
+- Extractions write `brain_layer = 'shared'` directly — no Rule D required
+- Admin uploads upgrade existing `personal` horse rows to `shared`
+- No text truncation limit (full document sent to Claude; non-admin capped at 12,000 chars)
+- Unlimited community post character limit (non-admin capped at 2,000 chars)
+- `GET /api/user/role` returns `{ isAdmin: true }` — used by feed/page.tsx to hide char counter
 
-Conversation history capped at last 10 messages. Both context sections degrade gracefully — failures never block the Brain response.
+---
 
-Prompt budget logged on every request:
-```
-[brain] prompt budget — system: N chars | community: N chars | docs: N chars | messages: N
-```
+## Hash dedup — three-branch ownership logic
 
-**Note on context source:** Layer 3 currently reads `user_documents`. Ingestion-extracted data is bridged into `user_documents` by `/api/ingest/extract` as a formatted summary after each race extraction. When the Brain context query is updated to read directly from the structured schema (`horses`, `performance`, `races`), this bridge is removed.
+Pre-check in `/api/ingest` before any PDF processing:
 
-### Known Brain API issue (resolved 2026-03-28)
-`messages.stream()` returns a `MessageStream` synchronously — the HTTP call fires lazily inside `for await`, inside `ReadableStream.start()`, AFTER the response is committed. API errors hit `controller.error()` with zero bytes sent, which Next.js converts to an opaque 500. Fixed by switching to `messages.create({ stream: true })` which is a real Promise — errors throw at `await` time, before any Response is returned.
+1. **Pending pre-check** — if user already has a `pending_documents` row for this hash:
+   - `races_extracted` empty AND created >2h ago → stale/stuck, delete + allow fresh upload
+   - `expires_at < now` → expired, delete + allow fresh upload
+   - `races_extracted` non-empty → mid-pipeline, return `{ status: "ready" }`
+
+2. **Branch A** — `ingestion_log` row exists where resolved horse has `uploaded_by = current_user` → silent accept
+3. **Branch B** — resolved horse has `brain_layer = 'shared'` → silent accept (data accessible to all)
+4. **Branch C** — resolved horse is another user's personal data → allow, run full extraction for current user
+
+---
+
+## Brain context query (LIVE)
+
+`buildSchemaContext` in `brain/route.ts`:
+- Baseline: fetches horses where `uploaded_by = userId OR brain_layer = 'shared'` (up to 50)
+- Term match: `extractQueryTerms` (capitalized sequences) + lowercase fallback against baseline horse names
+- Single batch performance query: `.in("horse_id", horseIds)` + client-side Map grouping (no N+1)
+- Includes all fraction fields: `frac_quarter/half/three_quarters` + `_sec` variants
+- Connections stats for all trainers/jockeys in result set
+
+Community intelligence (Rule D):
+- Relevance filter: 6+ char term threshold (filters generic "Derby", "Race", "Stakes")
+- Schema present: top 3 relevant posts at 200 chars each (`cappedCommunityContext`)
+- Schema absent: full relevant list at 300 chars each (`relevantCommunityContext`)
+- Gate: `!schemaContext && !relevantCommunityContext` → return fixed no-data message, Claude never called
+
+UI state messages filtered from conversation history before passing to Claude:
+- "I found N race(s)...", "Brain updated", "Got it", "Select a race to extract", extraction failure messages
+
+---
+
+## Extraction prompts (LIVE)
+
+**PRIMARY_SYSTEM** — full field extraction:
+- Race-first ordering (track → horses → narrative)
+- PP history: extract most recent prior race per horse from PP lines
+- Dual fraction format: string (`:22.65`) + decimal (`22.65`) for all splits
+- Odds: ML column explicit (read exact number, convert X-1 → decimal, never below 0.5)
+- 3 most recent workouts only
+- `max_tokens: 8192`; `stop_reason === 'max_tokens'` guard
+
+**FOLLOW_UP_SYSTEM** — per-race index extraction for multi-race documents; includes horse context from primary pass for confirmation
+
+Post-extraction validation: `odds < 0.5` → null + `odds_suspicious` extraction flag
 
 ---
 
@@ -160,32 +205,31 @@ The Quinella Brain is a structured Supabase knowledge base. Not RAG at beta — 
 
 ### Ingestion pipeline
 
-Two API routes, two phases:
-
 **Phase 1 — `/api/ingest` (Steps 1–2b):**
 1. Client computes SHA-256 hash before sending (Web Crypto API — `crypto.subtle.digest`)
-2. Step 2a: Hash checked against `ingestion_log.pdf_hash` — duplicate with status=success returns immediately, file never transferred again
-3. PDF text extracted via `pdf-parse`; unrecognized docs (scanned images, no text) return 422
-4. Lightweight Claude scan (single call, 256 max tokens): document type + total races + race date + track name/abbreviation
-5. Extracted text uploaded to Supabase Storage `brain-ingestion/{user_id}/{hash}.txt` (raw PDF never stored)
-6. `pending_documents` row created; N `ingestion_jobs` rows created (status: queued)
-7. Returns scan result; Brain injects race-count prompt into chat UI
+2. Stale/stuck pending pre-check (see hash dedup section above)
+3. Three-branch ownership dedup check
+4. PDF text extracted via `pdf-parse`
+5. Lightweight Claude scan (256 max tokens): document type + total races + race numbers + race date + track
+6. Extracted text uploaded to Storage `brain-ingestion/{user_id}/{hash}.txt`
+7. `pending_documents` row created; N `ingestion_jobs` rows created (status: queued)
+8. Returns scan result; Brain injects race-count prompt into chat UI
 
 **Phase 2 — `/api/ingest/extract` (Steps 3–10):**
-- Triggered by user selecting a race in chat — one Claude call per user-selected race
-- Downloads extracted text from Storage; determines primary prompt (race 1) vs follow-up prompt (races 2–N, includes horse context from prior extraction)
-- Claude returns structured JSON; validated before any write — malformed response logs failure, no partial write
-- **Step 4 — Race resolution:** match on track name (ilike) + race_date + race_number; insert track/race if new
-- **Step 5 — Horse resolution:** Pass 1 exact name match → Pass 2 sire+dam confirm; both match = merge + `merge_confirmed=true`; name matches but sire/dam differ = new row + collision flag in `ingestion_log.notes`; no match = insert
-- **Step 6 — Performance write:** check for existing row on horse_id + race_id; apply source priority — higher trust overwrites, lower trust logged only
-- **Step 7 — Connections:** upsert trainer + jockey by name + role; career stats only
-- **Steps 8–9:** update `ingestion_jobs` status; write `ingestion_log` entry (success/partial/failed — always written)
-- Backward compat: inserts formatted summary into `user_documents` so Brain context injection works without changes to `brain/route.ts`
-- Returns `{ status, message, races_extracted, races_pending }` — UI updates race selector inline
+- Triggered by user selecting a race — one Claude call per user-selected race
+- Admin check at entry: sets `isAdmin`, `brainLayer`, `textLimit`
+- Downloads extracted text from Storage
+- PRIMARY_SYSTEM (race 1) or FOLLOW_UP_SYSTEM (races 2–N)
+- Validates JSON structure before any write
+- Step 4: Race resolution (track → race, insert if new)
+- Step 5: Horse resolution (name match → sire/dam conflict check; conflict = new row + flag; no pedigree data = tentative merge, `merge_confirmed=false`; confirmed = `merge_confirmed=true`)
+- Step 6: Performance write (source priority — higher trust overwrites, lower trust logged only)
+- Step 7: Connections upsert (career stats only)
+- Steps 8–9: update `ingestion_jobs`, write `ingestion_log`
+- Backward compat: inserts formatted summary into `user_documents` — **PENDING REMOVAL**
+- Returns `{ status, message, races_extracted, races_pending }`
 
 ### Source priority hierarchy
-
-Higher number = higher trust. Lower trust never overwrites higher trust — logged only.
 
 | Priority | Source | Notes |
 |---|---|---|
@@ -195,15 +239,25 @@ Higher number = higher trust. Lower trust never overwrites higher trust — logg
 | 2 | user_upload | Third-party document — unverified |
 | 1 — Lowest | community | Derivative intelligence |
 
-All available figures (Beyer, Equibase, Timeform) always shown with source labels. Never silently blended.
-
-### Demand-driven extraction
-
-Extraction is triggered by user intent — never batch-processed. One Claude API call per user-selected race. After each extraction the Brain prompts for the next race; user can dismiss at any time. Conversation re-entry: on Brain page load, `pending_documents` checked for unextracted races still within expiry window.
-
 ### Document expiry
 
-`expires_at = MAX(race_date, created_at) + 24 hours`. Pre-race card held until race day + 24h; post-race card expires 24h from upload. UI nudge before expiry. **Extracted schema rows never expire** — only the `pending_documents` reference and the Storage text file fall away.
+`expires_at = MAX(race_date T23:59:59Z, created_at) + 24 hours`. pg_cron job runs hourly to delete expired storage objects and `pending_documents` rows (`20260402_storage_cleanup_cron.sql`).
+
+---
+
+## Content seeded (as of 2026-04-03)
+
+- **Wood Memorial** (Aqueduct, April 4, 2026) — full 13-horse field, `brain_layer = 'shared'`
+- **Bluegrass Stakes** (Keeneland, April 4, 2026) — in progress
+
+---
+
+## Phase 2 — Gated data access (NOT YET BUILT)
+
+- New `brain_layer = 'gated'` for admin-seeded premium data
+- `user_data_access` table: `user_id, pdf_hash, horse_ids, race_id, granted_at`
+- Upload act = proof of purchase = access unlock
+- `buildSchemaContext` checks `user_data_access` before returning gated data
 
 ---
 
@@ -215,13 +269,14 @@ Required in `.env.local` and Vercel (Settings → Environment Variables):
 ANTHROPIC_API_KEY=...
 NEXT_PUBLIC_SUPABASE_URL=...
 NEXT_PUBLIC_SUPABASE_ANON_KEY=...
-SUPABASE_SERVICE_ROLE_KEY=...   ← Supabase Dashboard → Settings → API → service_role
+SUPABASE_SERVICE_ROLE_KEY=...        ← Supabase Dashboard → Settings → API → service_role
 RACING_API_BASE_URL=https://api.theracingapi.com
 RACING_API_USERNAME=...
 RACING_API_PASSWORD=...
+HIVECAP_ADMIN_USER_IDS=<uuid1>,<uuid2>   ← comma-separated; server-side only
 ```
 
-`SUPABASE_SERVICE_ROLE_KEY` is required for Delete Account (`/api/account/delete`). Server-side only — never expose to browser.
+`SUPABASE_SERVICE_ROLE_KEY` and `HIVECAP_ADMIN_USER_IDS` are server-side only — never expose to browser.
 
 ---
 
@@ -255,31 +310,31 @@ RACING_API_PASSWORD=...
 
 ## Data sources
 
-- **Beta data strategy:** user-uploaded PDFs + The Racing API for live results
-- **The Racing API:** Basic Auth (base64 username:password); North America path confirmed: `/v1/north-america/meets`; returns `{ meet_id, track_id, track_name, country, date }`
+- **Beta data strategy:** admin-seeded PDFs (brain_layer=shared) + user-uploaded PDFs + The Racing API for live results
+- **The Racing API:** Basic Auth (base64 username:password); North America path confirmed: `/v1/north-america/meets`; NA entries endpoint `/v1/north-america/meets/{meetId}/entries` returns 401 on current plan — Path A fallback (`/v1/racecards`) available in diagnostic route
 - **Equibase / DRF:** B2B negotiations running in parallel — NOT blocking beta
 - **Beyer Speed Figures:** DRF exclusive license — not available at beta
 - **pgvector:** installed in Supabase but dormant — RAG deferred post-beta
 
 ---
 
-## Next priorities
+## Open build items — next session
 
-1. **Brain context query update** — update `brain/route.ts` Layer 3 to query structured schema (`horses`, `performance`, `races`) instead of `user_documents`; remove `user_documents` compat bridge from `/api/ingest/extract`
-2. **Pending document re-entry UI** — on Brain page load, check `pending_documents` for unexpired unextracted races; surface prompt in chat ("You have N unextracted races from [track] [date] — want to continue?")
-3. **Rule D UI** — surface shared Brain intelligence visibly to users (e.g., "N community findings loaded" indicator in Brain header)
-4. **Conversation management** — list/switch/delete conversations from the Brain UI
-5. **Projects** — wire project creation UI (schema exists, feed selector exists, no creation flow yet)
-6. **Racing API integration** — surface live meet data in Brain or a dedicated /races page; write results into `races` + `performance` tables via `racing_api` source
-7. **Real-time feed** — Supabase Realtime subscription on posts table instead of full refetch on submit
-8. **RAG / pgvector** — vector search over structured schema narrative fields post-Derby
+1. **Remove user_documents compat bridge** — update `brain/route.ts` to query structured schema (`horses`, `performance`, `races`) directly; remove write in `extract/route.ts` and read in `brain/route.ts`
+2. **Pending re-entry UI** — on Brain page load, check `pending_documents` for unexpired unextracted races; surface prompt in chat
+3. **PP history extraction** — extract prior race lines per horse (Beyer figures, fractions from past starts) as separate performance records
+4. **Phase 2 gated data access** — `brain_layer='gated'`, `user_data_access` table, upload = access unlock
+5. **Conversation management** — list/switch/delete conversations from Brain UI
+6. **Racing API entries integration** — build `/api/racing/entries` once Path A/B schema confirmed; write to `races` + `performance` + `horses` with `source='racing_api'`
+7. **Real-time feed** — Supabase Realtime subscription on posts instead of full refetch
+8. **RAG / pgvector** — post-Derby
 
 ---
 
 ## Open holes (do not guess — flag and skip)
 
 - **H-10:** Real-time results feed source API
-- ~~**H-11:** Brain architecture (RAG vs vector DB vs hybrid)~~ — **CLOSED 2026-04-02.** Structured Supabase schema. Claude API extraction on upload. No RAG at beta. pgvector dormant — activates post-Derby.
+- ~~**H-11:** Brain architecture~~ — **CLOSED 2026-04-02.** Structured Supabase schema. Claude API extraction on upload. No RAG at beta.
 - **H-13:** Vig percentage
 - **H-17:** Free tier query caps
 - **H-22:** Brain export fee structure
