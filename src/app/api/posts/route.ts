@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
 
@@ -15,7 +16,7 @@ export async function GET() {
     const supabase = createClient();
     const { data: posts, error } = await supabase
       .from("posts")
-      .select("id, user_email, username, project_id, conversation_id, content, brain_verified, created_at")
+      .select("id, user_id, user_email, project_id, conversation_id, content, brain_verified, created_at")
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -23,7 +24,29 @@ export async function GET() {
       return json({ error: "Failed to fetch posts" }, 502);
     }
 
-    return json({ posts: posts ?? [] });
+    if (!posts || posts.length === 0) return json({ posts: [] });
+
+    // Resolve current usernames from profiles (live lookup — not the post-time snapshot).
+    // Admin client used because GET is unauthenticated and profiles RLS requires a session.
+    const admin = createAdminClient();
+    const userIds = Array.from(new Set(posts.map((p) => p.user_id)));
+    const { data: profiles } = await admin
+      .from("profiles")
+      .select("id, username")
+      .in("id", userIds);
+
+    const usernameByUserId = new Map(
+      (profiles ?? []).map((p) => [p.id, p.username as string | null]),
+    );
+
+    // Strip user_id (internal); replace stored username snapshot with live value.
+    // Falls back to null — feed page renders username ?? user_email.
+    const enriched = posts.map(({ user_id, ...rest }) => ({
+      ...rest,
+      username: usernameByUserId.get(user_id) ?? null,
+    }));
+
+    return json({ posts: enriched });
   } catch (err) {
     console.error("[posts] GET threw:", err);
     return json({ error: "Internal server error" }, 500);
