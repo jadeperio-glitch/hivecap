@@ -66,7 +66,9 @@ export async function POST(request: Request) {
     if (!content || typeof content !== "string" || !content.trim()) {
       return json({ error: "content is required" }, 400);
     }
-    if (content.length > 2000) {
+    const adminIds = (process.env.HIVECAP_ADMIN_USER_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    const isAdmin = adminIds.includes(user.id);
+    if (!isAdmin && content.length > 2000) {
       return json({ error: "content exceeds 2000 character limit" }, 400);
     }
 
