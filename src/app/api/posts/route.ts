@@ -124,6 +124,28 @@ export async function POST(request: Request) {
       return json({ error: "Failed to create post" }, 500);
     }
 
+    // ── Rule D write-back ──────────────────────────────────────────────────────
+    // brain_verified=true means this post carries verified Brain intelligence.
+    // Write to brain_posts regardless of whether conversation_id is present
+    // (admin posts from the feed compose box qualify too).
+    if (post && post.brain_verified) {
+      const admin = createAdminClient();
+      const { error: ruleD } = await admin.from("brain_posts").insert({
+        user_id: user.id,
+        content: content.trim(),
+        brain_generated: true,
+        migrated_to_shared: true,
+        horse_id: null,
+        race_id: null,
+        paywalled: false,
+      });
+      if (ruleD) {
+        console.warn("[posts] Rule D write-back failed (non-fatal):", ruleD.message);
+      } else {
+        console.log("[posts] Rule D write-back succeeded for post:", post.id);
+      }
+    }
+
     return json({ success: true, post });
   } catch (err) {
     console.error("[posts] POST threw:", err);
