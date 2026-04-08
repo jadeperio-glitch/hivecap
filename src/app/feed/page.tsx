@@ -49,7 +49,6 @@ function PostCard({
   const isLong = post.content.length > PREVIEW_LEN;
   const preview = isLong ? post.content.slice(0, PREVIEW_LEN).trimEnd() + "…" : post.content;
   const isOwner = userId !== null && post.user_id === userId;
-  console.log("[PostCard] post.user_id:", post.user_id, "| userId prop:", userId, "| isOwner:", isOwner);
 
   async function handleDelete(e: React.MouseEvent) {
     e.stopPropagation();
@@ -100,7 +99,7 @@ function PostCard({
             <button
               onClick={handleDelete}
               disabled={deleting}
-              className="text-charcoal/25 hover:text-red-400 dark:text-cream/25 dark:hover:text-red-400 transition-colors disabled:opacity-40"
+              className="text-charcoal/40 hover:text-red-400 dark:text-white/40 dark:hover:text-red-400 transition-colors disabled:opacity-40"
               aria-label="Delete post"
             >
               <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
