@@ -39,11 +39,11 @@ export async function GET() {
       (profiles ?? []).map((p) => [p.id, p.username as string | null]),
     );
 
-    // Strip user_id (internal); replace stored username snapshot with live value.
+    // Replace stored username snapshot with live value; keep user_id for ownership checks (delete button).
     // Falls back to null — feed page renders username ?? user_email.
-    const enriched = posts.map(({ user_id, ...rest }) => ({
-      ...rest,
-      username: usernameByUserId.get(user_id) ?? null,
+    const enriched = posts.map((p) => ({
+      ...p,
+      username: usernameByUserId.get(p.user_id) ?? null,
     }));
 
     return json({ posts: enriched });
@@ -112,7 +112,7 @@ export async function POST(request: Request) {
         user_email: user.email ?? "unknown",
         username,
         content: content.trim(),
-        brain_verified: Boolean(conversation_id), // only true when posted from Brain chat (always carries a conversation_id)
+        brain_verified: isAdmin || Boolean(conversation_id), // admin posts always verified; non-admin requires conversation_id
         project_id: project_id || null,
         conversation_id: conversation_id || null,
       })
@@ -127,6 +127,42 @@ export async function POST(request: Request) {
     return json({ success: true, post });
   } catch (err) {
     console.error("[posts] POST threw:", err);
+    return json({ error: "Internal server error" }, 500);
+  }
+}
+
+// ── DELETE — delete a post owned by the authenticated user ─────────────────
+export async function DELETE(request: Request) {
+  try {
+    const supabase = createClient();
+    const { data: { user }, error: authErr } = await supabase.auth.getUser();
+    if (authErr || !user) return json({ error: "Unauthorized" }, 401);
+
+    let body: { id?: string };
+    try {
+      body = await request.json();
+    } catch {
+      return json({ error: "Invalid request body" }, 400);
+    }
+
+    if (!body.id) return json({ error: "id is required" }, 400);
+
+    const adminIds = (process.env.HIVECAP_ADMIN_USER_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    const isAdmin = adminIds.includes(user.id);
+
+    // Build delete query — admins can delete any post; others only their own
+    const base = supabase.from("posts").delete().eq("id", body.id);
+    const query = isAdmin ? base : base.eq("user_id", user.id);
+
+    const { error: deleteErr } = await query;
+    if (deleteErr) {
+      console.error("[posts] DELETE error:", deleteErr.message);
+      return json({ error: "Failed to delete post" }, 500);
+    }
+
+    return json({ success: true });
+  } catch (err) {
+    console.error("[posts] DELETE threw:", err);
     return json({ error: "Internal server error" }, 500);
   }
 }

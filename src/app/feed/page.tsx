@@ -8,6 +8,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 
 interface Post {
   id: string;
+  user_id: string;
   user_email: string;
   username: string | null;
   content: string;
@@ -33,11 +34,38 @@ function timeAgo(iso: string): string {
 
 const PREVIEW_LEN = 100;
 
-function PostCard({ post }: { post: Post }) {
+function PostCard({
+  post,
+  userId,
+  onDelete,
+}: {
+  post: Post;
+  userId: string | null;
+  onDelete: (id: string) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const displayName = post.username ?? post.user_email;
   const isLong = post.content.length > PREVIEW_LEN;
   const preview = isLong ? post.content.slice(0, PREVIEW_LEN).trimEnd() + "…" : post.content;
+  const isOwner = userId !== null && post.user_id === userId;
+  console.log("[PostCard] post.user_id:", post.user_id, "| userId prop:", userId, "| isOwner:", isOwner);
+
+  async function handleDelete(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (deleting) return;
+    setDeleting(true);
+    const res = await fetch("/api/posts", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: post.id }),
+    });
+    if (res.ok) {
+      onDelete(post.id);
+    } else {
+      setDeleting(false);
+    }
+  }
 
   return (
     <article
@@ -68,6 +96,18 @@ function PostCard({ post }: { post: Post }) {
               {expanded ? "Collapse" : "Expand"}
             </button>
           )}
+          {isOwner && (
+            <button
+              onClick={handleDelete}
+              disabled={deleting}
+              className="text-charcoal/25 hover:text-red-400 dark:text-cream/25 dark:hover:text-red-400 transition-colors disabled:opacity-40"
+              aria-label="Delete post"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+            </button>
+          )}
         </div>
       </div>
 
@@ -82,6 +122,7 @@ function PostCard({ post }: { post: Post }) {
 export default function FeedPage() {
   const router = useRouter();
   const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
   const [posts, setPosts] = useState<Post[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [isLoadingPosts, setIsLoadingPosts] = useState(true);
@@ -122,6 +163,7 @@ export default function FeedPage() {
         router.push("/login");
       } else {
         setUserEmail(user.email ?? null);
+        setUserId(user.id);
         fetchPosts();
         fetchProjects();
         fetch("/api/user/role").then((r) => r.json()).then((d) => setIsAdmin(d.isAdmin === true));
@@ -156,6 +198,10 @@ export default function FeedPage() {
     } finally {
       setIsSubmitting(false);
     }
+  }
+
+  function handlePostDeleted(id: string) {
+    setPosts((prev) => prev.filter((p) => p.id !== id));
   }
 
   async function handleLogout() {
@@ -328,7 +374,7 @@ export default function FeedPage() {
                 </p>
               )}
               {filteredPosts.map((post) => (
-                <PostCard key={post.id} post={post} />
+                <PostCard key={post.id} post={post} userId={userId} onDelete={handlePostDeleted} />
               ))}
             </div>
           )}
