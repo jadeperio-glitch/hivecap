@@ -26,7 +26,7 @@ AI-powered horse racing intelligence platform. Beta launch anchored to Kentucky 
 
 ---
 
-## Current build status (as of 2026-04-04)
+## Current build status (as of 2026-04-08, updated end-of-day)
 
 ### Pages
 
@@ -34,7 +34,7 @@ AI-powered horse racing intelligence platform. Beta launch anchored to Kentucky 
 - `src/app/login/page.tsx` — Supabase signInWithPassword, redirects to `/brain`
 - `src/app/signup/page.tsx` — open signup; username field (3–20 chars, `[a-zA-Z0-9_]`), Supabase signUp + immediate signIn, profile insert, redirects to `/brain`
 - `src/app/brain/page.tsx` — streaming chat UI with typing indicator, auth guard, PDF drag-and-drop upload (ingestion pipeline flow — see below), document panel, conversation persistence (load most recent on page load), "Post to Feed" modal, nav links to Settings / Community Feed / Sign out; SHA-256 hash computed client-side before upload; after scan, Brain injects race-count prompt into chat and renders inline race selector buttons with actual race number + track + date labels; `pendingIngestion` state tracks races_pending / races_extracted until all done or dismissed
-- `src/app/feed/page.tsx` — community feed; compose box with project selector (no brain_verified toggle — feed posts always submit as brain_verified=false); 2000 char limit (none for admin); collapsed post cards (100-char preview, click to expand); real-time client-side search/filter; Brain badge on verified posts
+- `src/app/feed/page.tsx` — community feed; compose box with project selector (no brain_verified toggle — feed posts always submit as brain_verified=false); 2000 char limit (none for admin); collapsed post cards (100-char preview, click to expand); real-time client-side search/filter; Brain badge on verified posts; trash icon delete button visible to post owner only (user_id comparison against authenticated session); optimistic removal on delete
 - `src/app/settings/page.tsx` — auth-guarded settings; three sections: Identity (edit username, read-only email, change password), Brain (list + delete user_documents), Account (Delete Account with DELETE confirmation modal)
 
 ### API routes
@@ -42,7 +42,7 @@ AI-powered horse racing intelligence platform. Beta launch anchored to Kentucky 
 - `src/app/api/brain/route.ts` — Claude streaming route; model `claude-sonnet-4-6`; uses `messages.create({ stream: true, tools: [web_search_20250305] })`; four-tier knowledge hierarchy in system prompt (Brain KB → Community Intelligence → web search → Claude expertise); `buildSchemaContext` queries horses + performance + connections from structured schema (single batch performance query, no N+1); relevance-scoped community posts (query-matched only, max 3 when schema present, 6+ char term threshold); Claude always called (no-data gate removed); stream handler skips `input_json_delta` events, forwards only `text_delta` to client; UI state messages filtered from conversation history; full conversation persistence; returns `X-Conversation-Id` header
 - `src/app/api/ingest/route.ts` — PDF ingestion entry point (Steps 1–2b); receives `file` + client-computed `hash` (SHA-256); three-branch ownership dedup (Branch A: own → accept, Branch B: shared → accept, Branch C: other-user personal → allow full extraction); stale pending record cleanup (expired or stuck >2h with 0 races extracted → delete + allow fresh upload); lightweight Claude scan (doc type + race count + race date + track + actual race numbers, 256 tokens); extracted text uploaded to Supabase Storage; inserts `pending_documents` + N `ingestion_jobs`; returns `{ pending_document_id, document_type, total_races, race_numbers, race_date, track_name, races_pending }`
 - `src/app/api/ingest/extract/route.ts` — per-race extraction (Steps 3–10); admin check at entry (isAdmin, brainLayer, textLimit); downloads extracted text from storage; PRIMARY_SYSTEM prompt with explicit odds parsing rules (ML column, decimal conversion table) and PP history extraction instructions; max_tokens 8192; post-extraction odds validation (< 0.5 nulled + flagged); race resolution → horse resolution (sire/dam conflict detection, tentative merge if pedigree absent) → performance write (source priority) → connections upsert; admin writes brain_layer='shared', non-admin writes brain_layer='personal'; admin uploads upgrade existing personal horse rows to shared; updates ingestion_jobs + ingestion_log + pending_documents; returns `{ status, message, races_extracted, races_pending }`
-- `src/app/api/posts/route.ts` — GET (all posts DESC; live username resolved from profiles via admin client batch query — never the stale post-time snapshot; user_id stripped from response); POST (auth-gated, max 2000 chars for non-admin, unlimited for admin; `brain_verified` is derived server-side as `Boolean(conversation_id)` — client-supplied value ignored; only Brain chat "Post to Feed" sends a conversation_id, so only those posts get brain_verified=true)
+- `src/app/api/posts/route.ts` — GET (all posts DESC; live username resolved from profiles via admin client batch query — never the stale post-time snapshot; `user_id` included in response for client-side ownership checks); POST (auth-gated, max 2000 chars for non-admin, unlimited for admin; `brain_verified` derived server-side as `isAdmin || Boolean(conversation_id)` — client-supplied value ignored; admin posts always brain_verified=true; non-admin posts require a conversation_id; **Rule D write-back**: after successful insert where `brain_verified=true`, inserts a row into `brain_posts` via admin client — failure is non-fatal, warns only); DELETE (auth-gated; users can only delete their own posts; admins can delete any post by id)
 - `src/app/api/user/role/route.ts` — GET; server-side admin check against `HIVECAP_ADMIN_USER_IDS`; returns `{ isAdmin: boolean }`; used by client components
 - `src/app/api/racing/entries/diagnostic/route.ts` — GET diagnostic; calls NA meets → finds target track → tries Path B (NA entries endpoint) then falls back to Path A (/v1/racecards); returns raw response + `path_used`; params: `?date=YYYY-MM-DD&track=<name>`
 - `src/app/api/upload/route.ts` — **legacy** PDF upload; not used by brain/page.tsx (replaced by /api/ingest flow) but left in place
@@ -123,7 +123,7 @@ All migrations in `supabase/migrations/`. Run each in Supabase SQL Editor in ord
 
 **`connections`** — career stats only; `name, role (trainer|jockey), win_pct, itm_pct, roi, specialty_distance, specialty_surface, notes, source, updated_at`; meet-level stats computed dynamically from performance table — never stored here
 
-**`brain_posts`** — Rule D write-back (separate from `posts` table); `user_id, content, brain_generated boolean, migrated_to_shared boolean, horse_id FK→horses (nullable), race_id FK→races (nullable), paywalled boolean`
+**`brain_posts`** — Rule D write-back (separate from `posts` table); `user_id, content, brain_generated boolean, migrated_to_shared boolean, horse_id FK→horses (nullable), race_id FK→races (nullable), paywalled boolean`; **status:** write-back LIVE as of 2026-04-08 — `POST /api/posts` inserts here whenever `brain_verified=true`; this table is currently write-only from the app (never read by `buildSchemaContext` or any route) — it is an audit log and future migration anchor only; Brain community intelligence reads directly from the `posts` table
 
 **`ingestion_log`** — audit trail and dedup anchor; every write logged here regardless of outcome; `user_id, source, source_ref, pdf_hash, horse_id FK→horses, race_id FK→races, status (success|partial|failed), notes`
 
@@ -144,6 +144,7 @@ Admin privileges:
 - Admin uploads upgrade existing `personal` horse rows to `shared`
 - No text truncation limit (full document sent to Claude; non-admin capped at 12,000 chars)
 - Unlimited community post character limit (non-admin capped at 2,000 chars)
+- All admin posts are `brain_verified = true` regardless of whether a `conversation_id` is present (2026-04-08)
 - `GET /api/user/role` returns `{ isAdmin: true }` — used by feed/page.tsx to hide char counter
 
 ---
@@ -172,7 +173,8 @@ Pre-check in `/api/ingest` before any PDF processing:
 - Includes all fraction fields: `frac_quarter/half/three_quarters` + `_sec` variants
 - Connections stats for all trainers/jockeys in result set
 
-Community intelligence (Rule D):
+Community intelligence:
+- Source: reads directly from `posts` table where `brain_verified=true` — NOT from `brain_posts`
 - Relevance filter: 6+ char term threshold (filters generic "Derby", "Race", "Stakes")
 - Schema present: top 3 relevant posts at 200 chars each (`cappedCommunityContext`)
 - Schema absent: full relevant list at 300 chars each (`relevantCommunityContext`)
@@ -304,7 +306,7 @@ HIVECAP_ADMIN_USER_IDS=<uuid1>,<uuid2>   ← comma-separated; server-side only
 
 - **Quinella Brain** — the ML-powered handicapping engine
 - **The Oracle** — automated handicapping sub-brand
-- **Rule D** — migration trigger from personal to shared Brain layer; LIVE as of 2026-03-27
+- **Rule D** — write-back to `brain_posts` whenever a `brain_verified=true` post is created; fires in `POST /api/posts` via admin client; LIVE as of 2026-04-08; currently audit log only — does not affect Brain query context (which reads `posts` directly)
 - **UC-04** — wager outcome calculator
 - **UC-09** — conversational ticket construction
 - **The vig** — creator economy revenue share
@@ -325,14 +327,16 @@ HIVECAP_ADMIN_USER_IDS=<uuid1>,<uuid2>   ← comma-separated; server-side only
 ## Open build items — next session
 
 1. ~~**Remove user_documents compat bridge**~~ — **DONE 2026-04-04.** `extract/route.ts` write removed; `brain/route.ts` already read structured schema directly. Table still exists in DB — migration to drop it is a future cleanup.
-2. **Pending re-entry UI** — on Brain page load, check `pending_documents` for unexpired unextracted races; surface prompt in chat
-3. **PP history extraction** — extract prior race lines per horse (Beyer figures, fractions from past starts) as separate performance records
-4. **Phase 2 gated data access** — `brain_layer='gated'`, `user_data_access` table, upload = access unlock
-5. **Conversation management** — list/switch/delete conversations from Brain UI
-6. **Racing API entries integration** — build `/api/racing/entries` once Path A/B schema confirmed; write to `races` + `performance` + `horses` with `source='racing_api'`
-7. **Real-time feed** — Supabase Realtime subscription on posts instead of full refetch
-8. **Drop `user_documents` table** — migration to remove the table and its reference in `account/delete/route.ts` once confirmed nothing depends on it
-9. **RAG / pgvector** — post-Derby
+2. ~~**Feed delete button**~~ — **DONE 2026-04-08.** Trash icon shows for post owner (`user_id` now included in GET response); DELETE route added; admin can delete any post.
+3. ~~**Rule D write-back**~~ — **DONE 2026-04-08.** `POST /api/posts` inserts into `brain_posts` after every `brain_verified=true` post insert. Non-fatal (warns on failure). Currently audit log only.
+4. **Pending re-entry UI** — on Brain page load, check `pending_documents` for unexpired unextracted races; surface prompt in chat
+5. **PP history extraction** — extract prior race lines per horse (Beyer figures, fractions from past starts) as separate performance records
+6. **Phase 2 gated data access** — `brain_layer='gated'`, `user_data_access` table, upload = access unlock
+7. **Conversation management** — list/switch/delete conversations from Brain UI
+8. **Racing API entries integration** — build `/api/racing/entries` once Path A/B schema confirmed; write to `races` + `performance` + `horses` with `source='racing_api'`
+9. **Real-time feed** — Supabase Realtime subscription on posts instead of full refetch
+10. **Drop `user_documents` table** — migration to remove the table and its reference in `account/delete/route.ts` once confirmed nothing depends on it
+11. **RAG / pgvector** — post-Derby
 
 ---
 
