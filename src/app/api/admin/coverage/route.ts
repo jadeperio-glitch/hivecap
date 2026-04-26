@@ -144,7 +144,7 @@ export async function GET() {
     const expected = r.expected_field_size ?? 0;
     return {
       race_id: r.id,
-      track_name: (r.tracks as { name: string } | null)?.name ?? "Unknown",
+      track_name: (Array.isArray(r.tracks) ? r.tracks[0]?.name : (r.tracks as { name: string } | null)?.name) ?? "Unknown",
       race_date: r.race_date,
       race_number: r.race_number,
       expected_field_size: expected,
