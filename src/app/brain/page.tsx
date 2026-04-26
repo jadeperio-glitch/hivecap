@@ -121,6 +121,7 @@ export default function BrainPage() {
   // Ingestion pipeline state
   const [pendingIngestion, setPendingIngestion] = useState<PendingIngestion | null>(null);
   const [extractingRace, setExtractingRace] = useState(false);
+  const [suggestedPrompts, setSuggestedPrompts] = useState<string[] | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -251,6 +252,21 @@ export default function BrainPage() {
         return;
       }
 
+      if (data.status === "already_covered") {
+        // Coverage check: all races already fully seeded in shared Brain.
+        // No pending_document was created — nothing to extract.
+        setUploadStatus("done");
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: data.message },
+        ]);
+        if (data.suggested_prompts?.length) {
+          setSuggestedPrompts(data.suggested_prompts);
+        }
+        setTimeout(() => setUploadStatus("idle"), 3000);
+        return;
+      }
+
       // Step 2b: Scan complete — prompt user to select a race
       setUploadStatus("done");
       await fetchDocuments();
@@ -274,13 +290,19 @@ export default function BrainPage() {
         filename: file.name,
       });
 
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: `I found ${totalRaces} race${totalRaces !== 1 ? "s" : ""} in this ${docType.replace("_", " ")}${dateLabel} at ${trackLabel}. Which race do you want to start with?`,
-        },
-      ]);
+      // Build the chat message — include covered race info for partial coverage.
+      let chatMessage: string;
+      if (data.coverage_partial) {
+        const coveredNums: number[] = data.coverage_partial.covered.map((r: { race_number: number }) => r.race_number);
+        const queuedNums: number[] = data.coverage_partial.queued.map((r: { race_number: number }) => r.race_number);
+        const coveredLabel = coveredNums.length === 1 ? `Race ${coveredNums[0]}` : `Races ${coveredNums.join(", ")}`;
+        const queuedLabel = queuedNums.length === 1 ? `Race ${queuedNums[0]}` : `Races ${queuedNums.join(", ")}`;
+        chatMessage = `${coveredLabel} ${coveredNums.length === 1 ? "is" : "are"} already in shared Brain. Extracting ${queuedLabel} — select a race to begin.`;
+      } else {
+        chatMessage = `I found ${totalRaces} race${totalRaces !== 1 ? "s" : ""} in this ${docType.replace("_", " ")}${dateLabel} at ${trackLabel}. Which race do you want to start with?`;
+      }
+
+      setMessages((prev) => [...prev, { role: "assistant", content: chatMessage }]);
 
       setTimeout(() => setUploadStatus("idle"), 3000);
     } catch (err) {
@@ -385,6 +407,7 @@ export default function BrainPage() {
     setInput("");
     setIsLoading(true);
     setError(null);
+    setSuggestedPrompts(null);
 
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
@@ -753,6 +776,41 @@ export default function BrainPage() {
                     className="text-charcoal/30 dark:text-cream/30 hover:text-charcoal/60 dark:hover:text-cream/60 text-xs px-2 py-1.5 transition-colors disabled:opacity-40"
                   >
                     Done
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Suggested prompt chips — shown after already_covered response */}
+          {suggestedPrompts && suggestedPrompts.length > 0 && (
+            <div className="flex items-end gap-3 mb-4">
+              <div className="w-8 h-8 rounded-full bg-gold/20 border border-gold/40 flex items-center justify-center flex-shrink-0">
+                <span className="text-sm">🐝</span>
+              </div>
+              <div className="bg-[#EDE9E1] dark:bg-[#1c1c1c] border border-gold/15 rounded-2xl rounded-bl-sm px-4 py-3 shadow-md">
+                <p className="text-xs text-charcoal/50 dark:text-cream/50 mb-2 font-medium">Try asking:</p>
+                <div className="flex flex-wrap gap-2">
+                  {suggestedPrompts.map((prompt, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => {
+                        setInput(prompt);
+                        setSuggestedPrompts(null);
+                        setTimeout(() => {
+                          if (textareaRef.current) textareaRef.current.focus();
+                        }, 0);
+                      }}
+                      className="bg-gold/10 border border-gold/30 hover:bg-gold/20 hover:border-gold/50 text-charcoal dark:text-cream text-xs font-medium rounded-lg px-3 py-1.5 transition-all duration-150 text-left"
+                    >
+                      {prompt}
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => setSuggestedPrompts(null)}
+                    className="text-charcoal/30 dark:text-cream/30 hover:text-charcoal/60 dark:hover:text-cream/60 text-xs px-2 py-1.5 transition-colors"
+                  >
+                    Dismiss
                   </button>
                 </div>
               </div>

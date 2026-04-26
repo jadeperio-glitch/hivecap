@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import Anthropic from "@anthropic-ai/sdk";
+import { checkRaceCoverage, RaceCoverageResult } from "@/lib/brain-coverage";
 
 export const runtime = "nodejs";
 
@@ -41,6 +42,43 @@ Rules:
 - race_numbers is an ordered array of the ACTUAL race numbers from the document (e.g., [7] for a single Race 7 PP sheet, [1,2,3,4,5,6,7,8,9] for a 9-race result chart). Length must equal total_races. If the race number cannot be determined, use sequential integers starting at 1.
 - race_date is the date of the MOST RECENT race card in the document (or the scheduled race date for race cards).
 - Return only the JSON. No preamble, no explanation, no markdown fences.`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Coverage check helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+function formatRaceLabel(track: string, date: string, raceNumber: number): string {
+  const d = new Date(date + "T00:00:00Z").toLocaleDateString("en-US", {
+    month: "short", day: "numeric", year: "numeric", timeZone: "UTC",
+  });
+  return `Race ${raceNumber} at ${track} on ${d}`;
+}
+
+function buildCoverageMessage(track: string, date: string, covered: RaceCoverageResult[]): string {
+  if (covered.length === 1) {
+    return `${formatRaceLabel(track, date, covered[0].race_number)} is already in shared Brain — full field. Ask the Brain anything about it.`;
+  }
+  return `${covered.length} races at ${track} on ${new Date(date + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })} are already in shared Brain. Ask the Brain anything about them.`;
+}
+
+function buildSuggestedPrompts(track: string, date: string, covered: RaceCoverageResult[]): string[] {
+  const raceLabel = formatRaceLabel(track, date, covered[0].race_number);
+  const isDerby = /derby|churchill/i.test(track);
+
+  if (isDerby) {
+    return [
+      "Who are the pace horses in this race and how does the pace scenario set up?",
+      "Which horse has the best Beyer speed figure heading into this race?",
+      "Analyze the post draw — which posts are advantaged at this distance?",
+    ];
+  }
+
+  return [
+    `What's the pace scenario for ${raceLabel}?`,
+    "Which horse has the best recent Beyer figure in the field?",
+    "Post draw analysis for this race",
+  ];
+}
 
 export async function POST(request: Request) {
   try {
@@ -227,6 +265,69 @@ export async function POST(request: Request) {
     }
 
     const totalRaces = scan.total_races ?? 1;
+    const racesArr = Array.from({ length: totalRaces }, (_, i) => i + 1);
+    const actualRaceNumbers: number[] = scan.race_numbers ?? racesArr;
+
+    // ── Coverage check — runs BEFORE storage upload ────────────────────────────
+    // Resolve the track by name (case-insensitive). If found, check whether all
+    // or some of the scanned races are already fully seeded in shared Brain.
+    // This prevents users from triggering expensive Claude extraction calls for
+    // races the admin has already seeded.
+    //
+    // TODO (Phase 4): add a "force upload" escape hatch for users who want a
+    // personal copy even when shared coverage exists.
+    let racesToQueue: number[] = racesArr; // default: queue all (1..N indices)
+    let coveragePartial: { covered: RaceCoverageResult[]; queued: RaceCoverageResult[] } | null = null;
+
+    if (scan.track_name && scan.race_date && actualRaceNumbers.length > 0) {
+      const { data: trackRow } = await admin
+        .from("tracks")
+        .select("id")
+        .ilike("name", scan.track_name)
+        .maybeSingle();
+
+      if (trackRow) {
+        console.log("[ingest] coverage check — track found:", trackRow.id, "| races:", actualRaceNumbers);
+
+        const coverage = await checkRaceCoverage({
+          track_id: trackRow.id,
+          race_date: scan.race_date,
+          race_numbers: actualRaceNumbers,
+        });
+
+        const coveredRaces = coverage.filter((r) => r.covered);
+        const uncoveredRaces = coverage.filter((r) => !r.covered);
+
+        console.log("[ingest] coverage result — covered:", coveredRaces.length, "| uncovered:", uncoveredRaces.length);
+
+        // Case A: ALL races covered → short-circuit entirely. No storage, no pending_doc, no jobs.
+        if (uncoveredRaces.length === 0 && coveredRaces.length > 0) {
+          return json({
+            status: "already_covered",
+            message: buildCoverageMessage(scan.track_name, scan.race_date, coveredRaces),
+            track_name: scan.track_name,
+            race_date: scan.race_date,
+            races_covered: coveredRaces.map((r) => ({
+              race_number: r.race_number,
+              race_id: r.race_id,
+            })),
+            suggested_prompts: buildSuggestedPrompts(scan.track_name, scan.race_date, coveredRaces),
+          });
+        }
+
+        // Case B: PARTIAL coverage → only queue uncovered race indices.
+        if (coveredRaces.length > 0 && uncoveredRaces.length > 0) {
+          const uncoveredActualNums = new Set(uncoveredRaces.map((r) => r.race_number));
+          racesToQueue = actualRaceNumbers
+            .map((raceNum, idx) => (uncoveredActualNums.has(raceNum) ? idx + 1 : null))
+            .filter((i): i is number => i !== null);
+          coveragePartial = { covered: coveredRaces, queued: uncoveredRaces };
+          console.log("[ingest] partial coverage — queuing indices:", racesToQueue);
+        }
+
+        // Case C: no coverage → racesToQueue unchanged (all indices)
+      }
+    }
 
     // ── Upload extracted text to Supabase Storage ─────────────────────────────
     // We store extracted text (not the raw PDF). storage_ref is the path.
@@ -262,7 +363,7 @@ export async function POST(request: Request) {
     const expiresAt = new Date(Math.max(raceDateMs, now) + 24 * 60 * 60 * 1000).toISOString();
 
     // ── Insert pending_documents ───────────────────────────────────────────────
-    const racesArr = Array.from({ length: totalRaces }, (_, i) => i + 1);
+    // racesToQueue may be a subset of racesArr when partial coverage applies.
 
     const { data: pendingDoc, error: pendingErr } = await admin
       .from("pending_documents")
@@ -273,7 +374,7 @@ export async function POST(request: Request) {
         total_races: totalRaces,
         race_date: scan.race_date ?? null,
         races_extracted: [],
-        races_pending: racesArr,
+        races_pending: racesToQueue,
         storage_ref: storageRef,
         expires_at: expiresAt,
       })
@@ -285,8 +386,8 @@ export async function POST(request: Request) {
       return json({ error: "Failed to create ingestion record" }, 500);
     }
 
-    // ── Insert ingestion_jobs (one per race, all queued) ───────────────────────
-    const jobs = racesArr.map((raceIndex) => ({
+    // ── Insert ingestion_jobs (one per queued race) ────────────────────────────
+    const jobs = racesToQueue.map((raceIndex) => ({
       user_id: user.id,
       pdf_hash: clientHash,
       race_index: raceIndex,
@@ -302,19 +403,29 @@ export async function POST(request: Request) {
     }
 
     console.log(
-      `[ingest] scan complete — type: ${scan.document_type} | races: ${totalRaces} | date: ${scan.race_date} | track: ${scan.track_name} | pending_doc: ${pendingDoc.id}`,
+      `[ingest] scan complete — type: ${scan.document_type} | races: ${totalRaces} | queued: ${racesToQueue.length} | date: ${scan.race_date} | track: ${scan.track_name} | pending_doc: ${pendingDoc.id}`,
     );
 
     return json({
       pending_document_id: pendingDoc.id,
       document_type: scan.document_type,
       total_races: totalRaces,
-      race_numbers: scan.race_numbers ?? racesArr,
+      race_numbers: actualRaceNumbers,
       race_date: scan.race_date,
       track_name: scan.track_name,
       track_abbreviation: scan.track_abbreviation,
-      races_pending: racesArr,
+      races_pending: racesToQueue,
       filename: file.name,
+      // Present when some races were already covered — UI shows a combined message.
+      coverage_partial: coveragePartial
+        ? {
+            covered: coveragePartial.covered.map((r) => ({
+              race_number: r.race_number,
+              race_id: r.race_id,
+            })),
+            queued: coveragePartial.queued.map((r) => ({ race_number: r.race_number })),
+          }
+        : null,
     });
   } catch (err) {
     console.error("[ingest] unhandled error:", err);

@@ -26,21 +26,24 @@ AI-powered horse racing intelligence platform. Beta launch anchored to Kentucky 
 
 ---
 
-## Current build status (as of 2026-04-08, updated end-of-day)
+## Current build status (as of 2026-04-26, updated end-of-day)
 
 ### Pages
 
 - `src/app/page.tsx` — landing page; async server component; nav adapts to auth state (Go to Brain vs Sign In + Get Access); Community Feed link visible to all
 - `src/app/login/page.tsx` — Supabase signInWithPassword, redirects to `/brain`
 - `src/app/signup/page.tsx` — open signup; username field (3–20 chars, `[a-zA-Z0-9_]`), Supabase signUp + immediate signIn, profile insert, redirects to `/brain`
-- `src/app/brain/page.tsx` — streaming chat UI with typing indicator, auth guard, PDF drag-and-drop upload (ingestion pipeline flow — see below), document panel, conversation persistence (load most recent on page load), "Post to Feed" modal, nav links to Settings / Community Feed / Sign out; SHA-256 hash computed client-side before upload; after scan, Brain injects race-count prompt into chat and renders inline race selector buttons with actual race number + track + date labels; `pendingIngestion` state tracks races_pending / races_extracted until all done or dismissed
+- `src/app/brain/page.tsx` — streaming chat UI with typing indicator, auth guard, PDF drag-and-drop upload (ingestion pipeline flow — see below), document panel, conversation persistence (load most recent on page load), "Post to Feed" modal, nav links to Settings / Community Feed / Sign out; SHA-256 hash computed client-side before upload; after scan, Brain injects race-count prompt into chat and renders inline race selector buttons with actual race number + track + date labels; `pendingIngestion` state tracks races_pending / races_extracted until all done or dismissed; handles `already_covered` response (no pending doc — shows coverage message + suggested prompt chips); handles partial coverage response (shows combined message + race selector for uncovered races only)
+- `src/app/admin/coverage/page.tsx` — async server component; auth-guards to admin only (HIVECAP_ADMIN_USER_IDS check), non-admin → redirect to `/`; renders `<CoverageClient />`
+- `src/app/admin/coverage/CoverageClient.tsx` — client component; Mark Race Coverage form (track dropdown from DB, date, race number, expected field size); Currently Marked Races table (track, date, race #, field size, seeded count, green Covered / amber Partial badge, Unmark button); refreshes on submit/unmark
 - `src/app/feed/page.tsx` — community feed; compose box with project selector (no brain_verified toggle — feed posts always submit as brain_verified=false); 2000 char limit (none for admin); collapsed post cards (100-char preview, click to expand); real-time client-side search/filter; Brain badge on verified posts; trash icon delete button visible to post owner only (user_id comparison against authenticated session); optimistic removal on delete
 - `src/app/settings/page.tsx` — auth-guarded settings; three sections: Identity (edit username, read-only email, change password), Brain (list + delete user_documents), Account (Delete Account with DELETE confirmation modal)
 
 ### API routes
 
 - `src/app/api/brain/route.ts` — Claude streaming route; model `claude-sonnet-4-6`; uses `messages.create({ stream: true, tools: [web_search_20250305] })`; four-tier knowledge hierarchy in system prompt (Brain KB → Community Intelligence → web search → Claude expertise); `buildSchemaContext` queries horses + performance + connections from structured schema (single batch performance query, no N+1); relevance-scoped community posts (query-matched only, max 3 when schema present, 6+ char term threshold); Claude always called (no-data gate removed); stream handler skips `input_json_delta` events, forwards only `text_delta` to client; UI state messages filtered from conversation history; full conversation persistence; returns `X-Conversation-Id` header
-- `src/app/api/ingest/route.ts` — PDF ingestion entry point (Steps 1–2b); receives `file` + client-computed `hash` (SHA-256); three-branch ownership dedup (Branch A: own → accept, Branch B: shared → accept, Branch C: other-user personal → allow full extraction); stale pending record cleanup (expired or stuck >2h with 0 races extracted → delete + allow fresh upload); lightweight Claude scan (doc type + race count + race date + track + actual race numbers, 256 tokens); extracted text uploaded to Supabase Storage; inserts `pending_documents` + N `ingestion_jobs`; returns `{ pending_document_id, document_type, total_races, race_numbers, race_date, track_name, races_pending }`
+- `src/app/api/ingest/route.ts` — PDF ingestion entry point (Steps 1–2b); receives `file` + client-computed `hash` (SHA-256); three-branch ownership dedup (Branch A: own → accept, Branch B: shared → accept, Branch C: other-user personal → allow full extraction); stale pending record cleanup; lightweight Claude scan (256 tokens); **coverage check** runs after scan and before storage upload — resolves track by name, calls `checkRaceCoverage`; Case A (all covered) → returns `{ status: 'already_covered', message, races_covered, suggested_prompts }` with no storage/pending_doc/jobs created; Case B (partial) → only queues uncovered race indices, returns normal response + `coverage_partial` field; Case C (none covered) → existing flow unchanged; `races_pending` and `ingestion_jobs` always reflect only uncovered races; returns `{ pending_document_id, document_type, total_races, race_numbers, race_date, track_name, races_pending, coverage_partial? }`
+- `src/app/api/admin/coverage/route.ts` — admin-only (403 if not in HIVECAP_ADMIN_USER_IDS); POST: find-or-create race row, set `coverage_complete=true + expected_field_size + marked_by/at`, returns `{ race_id, performance_count, expected_field_size, fully_covered }`; GET: list all coverage-complete races joined with tracks + batched performance counts; DELETE: set `coverage_complete=false`, null `marked_by/at`
 - `src/app/api/ingest/extract/route.ts` — per-race extraction (Steps 3–10); admin check at entry (isAdmin, brainLayer, textLimit); downloads extracted text from storage; PRIMARY_SYSTEM prompt with explicit odds parsing rules (ML column, decimal conversion table) and PP history extraction instructions; max_tokens 8192; post-extraction odds validation (< 0.5 nulled + flagged); race resolution → horse resolution (sire/dam conflict detection, tentative merge if pedigree absent) → performance write (source priority) → connections upsert; admin writes brain_layer='shared', non-admin writes brain_layer='personal'; admin uploads upgrade existing personal horse rows to shared; updates ingestion_jobs + ingestion_log + pending_documents; returns `{ status, message, races_extracted, races_pending }`
 - `src/app/api/posts/route.ts` — GET (all posts DESC; live username resolved from profiles via admin client batch query — never the stale post-time snapshot; `user_id` included in response for client-side ownership checks); POST (auth-gated, max 2000 chars for non-admin, unlimited for admin; `brain_verified` derived server-side as `isAdmin || Boolean(conversation_id)` — client-supplied value ignored; admin posts always brain_verified=true; non-admin posts require a conversation_id; **Rule D write-back**: after successful insert where `brain_verified=true`, inserts a row into `brain_posts` via admin client — failure is non-fatal, warns only); DELETE (auth-gated; users can only delete their own posts; admins can delete any post by id)
 - `src/app/api/user/role/route.ts` — GET; server-side admin check against `HIVECAP_ADMIN_USER_IDS`; returns `{ isAdmin: boolean }`; used by client components
@@ -56,6 +59,7 @@ AI-powered horse racing intelligence platform. Beta launch anchored to Kentucky 
 - `src/lib/supabase/server.ts` — server client (createServerClient + cookies())
 - `src/lib/supabase/admin.ts` — admin client (service role key, no session persistence)
 - `src/lib/racing-api.ts` — typed Racing API client; confirmed North America path: `/v1/north-america/meets`; functions: `getNorthAmericaMeets`, `getNorthAmericaEntries`, `getNorthAmericaResults`, `getResults`, `getRacecard`, `getUpcomingRaces`
+- `src/lib/brain-coverage.ts` — `checkRaceCoverage({ track_id, race_date, race_numbers })` → `RaceCoverageResult[]`; uses admin client (service role) to bypass RLS; batches race and performance queries; reasons: `fully_covered | race_not_found | not_marked_complete | insufficient_rows`
 
 ### Components
 
@@ -115,7 +119,7 @@ All migrations in `supabase/migrations/`. Run each in Supabase SQL Editor in ord
 
 **`horses`** — master entity; one row per unique horse confirmed by name + sire + dam; key fields: `name, sire, dam, dam_sire, trainer, jockey, owner, age, sex, color, foaling_date, notes, canonical_source, merge_confirmed boolean, source, brain_layer (shared|personal), uploaded_by uuid`; RLS: shared rows visible to all authenticated; personal rows scoped to owner
 
-**`races`** — one row per race; always resolved before horse on ingestion; key fields: `track_id FK→tracks, race_date, race_number, race_name, distance, surface, condition, purse, class_level, claiming_price, field_size, notes, source`; RLS: authenticated read all
+**`races`** — one row per race; always resolved before horse on ingestion; key fields: `track_id FK→tracks, race_date, race_number, race_name, distance, surface, condition, purse, class_level, claiming_price, field_size, notes, source`; coverage columns added `20260426_race_coverage.sql`: `expected_field_size INTEGER, coverage_complete BOOLEAN DEFAULT FALSE, coverage_marked_by UUID, coverage_marked_at TIMESTAMPTZ`; partial index `idx_races_coverage_lookup` on `(track_id, race_date, race_number) WHERE coverage_complete = TRUE`; RLS: authenticated read all
 
 **`performance`** — core join table; one row per horse per race; key fields: `horse_id FK→horses, race_id FK→races`; per-figure source labels: `beyer_figure + beyer_source, equibase_speed_fig + equibase_source, timeform_rating + timeform_source`; dual-format fractions: `frac_quarter text + frac_quarter_sec decimal` (same for half, three-quarters, final); `running_style (E|EP|PS|C|S), trip_notes, trouble_line, brain_layer, uploaded_by, source`; `beyer_figure` NEVER zero-filled — null = not available; RLS: shared visible to all, personal scoped to owner
 
@@ -218,9 +222,10 @@ The Quinella Brain is a structured Supabase knowledge base. Not RAG at beta — 
 3. Three-branch ownership dedup check
 4. PDF text extracted via `pdf-parse`
 5. Lightweight Claude scan (256 max tokens): document type + total races + race numbers + race date + track
-6. Extracted text uploaded to Storage `brain-ingestion/{user_id}/{hash}.txt`
-7. `pending_documents` row created; N `ingestion_jobs` rows created (status: queued)
-8. Returns scan result; Brain injects race-count prompt into chat UI
+6. **Coverage check** (LIVE as of 2026-04-26): resolves track by name (ilike), calls `checkRaceCoverage`; Case A → short-circuit, return `already_covered`; Case B → filter racesToQueue to uncovered indices only; Case C → no-op
+7. Extracted text uploaded to Storage `brain-ingestion/{user_id}/{hash}.txt` (skipped for Case A)
+8. `pending_documents` row created with `races_pending = racesToQueue`; `ingestion_jobs` rows created for uncovered races only (skipped for Case A)
+9. Returns scan result; Brain injects race-count prompt or coverage message + suggested prompt chips into chat UI
 
 **Phase 2 — `/api/ingest/extract` (Steps 3–10):**
 - Triggered by user selecting a race — one Claude call per user-selected race
@@ -329,14 +334,15 @@ HIVECAP_ADMIN_USER_IDS=<uuid1>,<uuid2>   ← comma-separated; server-side only
 1. ~~**Remove user_documents compat bridge**~~ — **DONE 2026-04-04.** `extract/route.ts` write removed; `brain/route.ts` already read structured schema directly. Table still exists in DB — migration to drop it is a future cleanup.
 2. ~~**Feed delete button**~~ — **DONE 2026-04-08.** Trash icon shows for post owner (`user_id` now included in GET response); DELETE route added; admin can delete any post.
 3. ~~**Rule D write-back**~~ — **DONE 2026-04-08.** `POST /api/posts` inserts into `brain_posts` after every `brain_verified=true` post insert. Non-fatal (warns on failure). Currently audit log only.
-4. **Pending re-entry UI** — on Brain page load, check `pending_documents` for unexpired unextracted races; surface prompt in chat
-5. **PP history extraction** — extract prior race lines per horse (Beyer figures, fractions from past starts) as separate performance records
-6. **Phase 2 gated data access** — `brain_layer='gated'`, `user_data_access` table, upload = access unlock
-7. **Conversation management** — list/switch/delete conversations from Brain UI
-8. **Racing API entries integration** — build `/api/racing/entries` once Path A/B schema confirmed; write to `races` + `performance` + `horses` with `source='racing_api'`
-9. **Real-time feed** — Supabase Realtime subscription on posts instead of full refetch
-10. **Drop `user_documents` table** — migration to remove the table and its reference in `account/delete/route.ts` once confirmed nothing depends on it
-11. **RAG / pgvector** — post-Derby
+4. ~~**Race coverage check**~~ — **DONE 2026-04-26.** Migration `20260426_race_coverage.sql` adds coverage columns to `races`. `/admin/coverage` UI for admin to mark races complete. `checkRaceCoverage` helper in `brain-coverage.ts`. Coverage check in `/api/ingest` short-circuits extraction when all races seeded; partial coverage queues only uncovered races. Brain UI handles `already_covered` with suggested prompt chips.
+5. **Pending re-entry UI** — on Brain page load, check `pending_documents` for unexpired unextracted races; surface prompt in chat
+6. **PP history extraction** — extract prior race lines per horse (Beyer figures, fractions from past starts) as separate performance records
+7. **Phase 2 gated data access** — `brain_layer='gated'`, `user_data_access` table, upload = access unlock
+8. **Conversation management** — list/switch/delete conversations from Brain UI
+9. **Racing API entries integration** — build `/api/racing/entries` once Path A/B schema confirmed; write to `races` + `performance` + `horses` with `source='racing_api'`
+10. **Real-time feed** — Supabase Realtime subscription on posts instead of full refetch
+11. **Drop `user_documents` table** — migration to remove the table and its reference in `account/delete/route.ts` once confirmed nothing depends on it
+12. **RAG / pgvector** — post-Derby
 
 ---
 
@@ -349,6 +355,7 @@ HIVECAP_ADMIN_USER_IDS=<uuid1>,<uuid2>   ← comma-separated; server-side only
 - **H-22:** Brain export fee structure
 - **H-23:** brain_verified editing threshold — how much can a user edit a Brain-generated post before it no longer qualifies for brain_verified=true and Rule D migration? Requires a defined policy and eventually a technical enforcement mechanism (e.g. similarity threshold between stored Brain output and submitted post content). Decision required before wide launch, not beta.
 - **H-24:** "Post to Feed" smart shortcut — after a Brain response, offer a follow-up action: "Shrink to 2000 characters and post to feed?" Single click condenses the Brain output to 2000 chars and opens the Post to Feed modal pre-populated with the condensed version, brain_verified=true. Removes friction between good analysis and community publishing.
+- **H-25:** Coverage drift detection — if admin marks coverage complete and performance rows are later deleted, `coverage_complete=true` but count < `expected_field_size`. Coverage check correctly returns `insufficient_rows`, but admin UI should surface a "Drift" badge. Out of scope for beta.
 
 ---
 
