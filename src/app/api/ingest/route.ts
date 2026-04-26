@@ -161,7 +161,7 @@ export async function POST(request: Request) {
     // Step 1: All ingestion_log rows for this hash (successful/partial extractions only)
     const { data: logRows } = await admin
       .from("ingestion_log")
-      .select("user_id, horse_id")
+      .select("user_id, horse_id, race_id")
       .eq("pdf_hash", clientHash)
       .in("status", ["success", "partial"])
       .limit(20);
@@ -188,9 +188,53 @@ export async function POST(request: Request) {
         return json({ status: "ready", message: "Got it — ready to analyze." });
       }
 
-      // Branch B: any horse in the shared Brain — accessible to this user, confirm silently
+      // Branch B: any horse in the shared Brain — accessible to this user, confirm silently.
+      // Upgrade to already_covered response shape when we can resolve race info from the log.
       if (horsesData.some((h) => h.brain_layer === "shared")) {
         console.log("[ingest] Branch B — data is in the shared Brain:", clientHash);
+
+        const raceIds = Array.from(
+          new Set(logRows.map((r) => r.race_id).filter((id): id is string => !!id))
+        );
+
+        if (raceIds.length > 0) {
+          const { data: raceRows } = await admin
+            .from("races")
+            .select("id, race_number, race_date, tracks(name)")
+            .in("id", raceIds);
+
+          if (raceRows && raceRows.length > 0) {
+            const firstRace = raceRows[0];
+            const trackName =
+              (Array.isArray(firstRace.tracks)
+                ? firstRace.tracks[0]?.name
+                : (firstRace.tracks as { name: string } | null)?.name) ?? null;
+            const raceDate: string | null = firstRace.race_date;
+
+            if (trackName && raceDate) {
+              const coveredRaces: RaceCoverageResult[] = raceRows.map((r) => ({
+                race_number: r.race_number,
+                race_id: r.id,
+                covered: true,
+                reason: "fully_covered",
+              }));
+
+              return json({
+                status: "already_covered",
+                message: buildCoverageMessage(trackName, raceDate, coveredRaces),
+                track_name: trackName,
+                race_date: raceDate,
+                races_covered: coveredRaces.map((r) => ({
+                  race_number: r.race_number,
+                  race_id: r.race_id,
+                })),
+                suggested_prompts: buildSuggestedPrompts(trackName, raceDate, coveredRaces),
+              });
+            }
+          }
+        }
+
+        // Fallback when race info is unavailable (old log rows without race_id)
         return json({ status: "ready", message: "Got it — ready to analyze." });
       }
 
