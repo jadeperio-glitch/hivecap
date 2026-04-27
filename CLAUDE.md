@@ -170,10 +170,20 @@ Pre-check in `/api/ingest` before any PDF processing:
 
 ## Brain context query (LIVE)
 
-`buildSchemaContext` in `brain/route.ts`:
-- Baseline: fetches horses where `uploaded_by = userId OR brain_layer = 'shared'` (up to 50)
-- Term match: `extractQueryTerms` (capitalized sequences) + lowercase fallback against baseline horse names
+`buildSchemaContext` in `brain/route.ts` — two execution paths; race-anchored runs first:
+
+**Race-anchored path (added 2026-04-27, commit `c15168c`):**
+- `extractRaceReference(query)` parses patterns like "race N", "race N at <track>", "race N on <date>", "Churchill on May 2". Returns `{ raceNumber, trackHint, dateHint }` or null. Date hints assumed 2026. Returns null if there is no race number AND the query lacks both a track and a date hint (prevents false positives on generic date mentions).
+- `resolveRace(ref)` converts hints to a `races.id`: looks up track via `tracks.name ILIKE '%hint%'` (falls back to `abbreviation`), then queries `races` by `race_number + race_date + track_id`. Returns null if ambiguous or absent.
+- When a race resolves: `buildRaceAnchoredContext(raceId)` fetches **all** performance rows for that race (no horse cap) with joined horse data, plus prior PP history for every horse in the field via a single batch query (no N+1). Connections stats included for all trainers/jockeys in the field.
+- When a race ref is detected but does not resolve (or resolves to zero performance rows): `RACE_HALLUCINATION_GATE` is injected into the system prompt — explicitly tells Claude the Brain has no data for that race, forbids presenting any analysis as Brain Knowledge Base data, permits web search but requires it to be labeled.
+- Vercel function logs: `[brain/schema] race ref detected:` and `[brain/schema] resolved race_id:` confirm parser + DB lookup for future debugging.
+
+**Term-match + baseline path (fallback when no race ref detected):**
+- Baseline: fetches horses where `uploaded_by = userId OR brain_layer = 'shared'` (up to **500** — raised from 50 on 2026-04-27; the 50-row cap caused silent misses once the shared Brain exceeded 50 horses; currently 214 shared horses and growing)
+- Term match: `extractQueryTerms` (capitalized sequences) + lowercase fallback against the full 500-row baseline
 - Single batch performance query: `.in("horse_id", horseIds)` + client-side Map grouping (no N+1)
+- Renders top 15 horses with up to 5 prior performances each
 - Includes all fraction fields: `frac_quarter/half/three_quarters` + `_sec` variants
 - Connections stats for all trainers/jockeys in result set
 
@@ -336,18 +346,19 @@ HIVECAP_ADMIN_USER_IDS=<uuid1>,<uuid2>   ← comma-separated; server-side only
 3. ~~**Rule D write-back**~~ — **DONE 2026-04-08.** `POST /api/posts` inserts into `brain_posts` after every `brain_verified=true` post insert. Non-fatal (warns on failure). Currently audit log only.
 4. ~~**Race coverage check**~~ — **DONE 2026-04-26.** Admin UI at `/admin/coverage`. Migration `20260426_race_coverage.sql` adds 4 columns to `races`. `/api/ingest` short-circuits on covered races, no extraction triggered. Validated end-to-end on Wood Memorial AND Kentucky Derby (2026-05-02 race 12 at Churchill Downs, 20-horse field after AE cleanup). User uploads of fully-covered races render coverage message + 3 clickable prompt chips, zero side effects.
 5. ~~**Branch B response upgrade**~~ — **DONE 2026-04-26 (commit `ee607d0`).** `/api/ingest` Branch B now resolves race info from `ingestion_log.race_id` (added to the dedup query) and returns `status: 'already_covered'` with the same message + prompt chips shape as the coverage check. Validated end-to-end: non-admin user uploading a hash-match seeded PDF (Roxelana S.) gets the polished coverage card. Old log rows without race_id fall back to the bland "ready" message — backward-compatible. Frontend already handles the response shape, no UI changes needed.
-6. **Branch A response upgrade (NEW 2026-04-26)** — Branch A still returns the bland "Got it — ready to analyze" when the *original* uploader re-uploads their own seeded PDF. Same fix shape as Branch B: lookup race info via `ingestion_log.race_id`, return `already_covered`. Small ingest route change, no schema impact, no frontend impact. Worth doing for consistency — the original uploader is typically an admin doing testing/maintenance and is the most likely person to notice the inconsistency. Sits next to Branch B in `/api/ingest/route.ts`.
-7. **Pending pre-check refinement (NEW 2026-04-26)** — `/api/ingest` short-circuits on any `pending_documents` row with non-empty `races_extracted` (treats it as "user is mid-pipeline"), even when the extraction is fully complete (`races_pending = []`). Stale completed pending rows mask the polished Branch B / coverage check UX until they expire 24h after race date. Fix: distinguish partial (`races_pending` non-empty → mid-pipeline, return ready) from complete (`races_pending` empty → fall through to dedup). Hit during Branch B verification on 2026-04-26 — manual `DELETE FROM pending_documents WHERE id = ...` worked as workaround. Low risk, ~30 min fix.
-8. **Pending re-entry UI** — on Brain page load, check `pending_documents` for unexpired unextracted races; surface prompt in chat. Edge case but real (browser closes mid-extraction).
-9. **PP history extraction** — extract prior race lines per horse (Beyer figures, fractions from past starts) as separate performance records.
-10. **Phase 2 gated data access** — `brain_layer='gated'`, `user_data_access` table, upload = access unlock.
-11. **Conversation management** — list/switch/delete conversations from Brain UI.
-12. **Racing API entries integration** — build `/api/racing/entries` once Path A/B schema confirmed; write to `races` + `performance` + `horses` with `source='racing_api'`.
-13. **Real-time feed** — Supabase Realtime subscription on posts instead of full refetch.
-14. **Drop `user_documents` table** — migration to remove the table and its reference in `account/delete/route.ts` once confirmed nothing depends on it.
-15. **Chunked extraction (Option B)** — replace single-call extraction with two-pass flow (race shell + horse roster, then loop horses N at a time). Solves the token wall on big fields without requiring manual page-by-page admin uploads. Post-Derby refactor. Reuses existing `PRIMARY_SYSTEM` for shell pass, needs new `HORSE_BATCH_SYSTEM` for horse passes. Watch for partial-write bugs (pass 1 succeeds, pass 2 fails mid-loop).
-16. **AE / scratched / entered status modeling (H-25)** — `performance` table currently has no concept of whether a horse is in the active field. AE rows must be manually deleted today (see Derby ops note below). Schema migration adds `entry_status` enum to `performance`; `buildSchemaContext` filters to entered by default; coverage check counts only entered rows against expected_field_size. Required for any race with AEs to be cleanly handled. Manual deletion is the workaround for Derby 2026.
-17. **RAG / pgvector** — post-Derby.
+6. ~~**Race-anchored Brain context + baseline cap fix**~~ — **DONE 2026-04-27 (commit `c15168c`).** Two stacked bugs confirmed via `/api/diagnostic/rls-check` (now deleted): RLS was never the issue — 214 shared horses and all 10 Race 5 performance rows were visible to non-admin users. Failure was entirely in `buildSchemaContext`: (1) 50-row baseline cap sliced off horses once shared Brain exceeded 50 entries; raised to 500. (2) No race-anchored context path — queries like "Race 5 at Churchill on May 2" contain no horse names and returned empty context even with full data present. Fixed by `extractRaceReference` + `resolveRace` + `buildRaceAnchoredContext` with hallucination gate for unresolvable refs. See Brain context query section above for full detail.
+7. **Branch A response upgrade (NEW 2026-04-26)** — Branch A still returns the bland "Got it — ready to analyze" when the *original* uploader re-uploads their own seeded PDF. Same fix shape as Branch B: lookup race info via `ingestion_log.race_id`, return `already_covered`. Small ingest route change, no schema impact, no frontend impact. Worth doing for consistency — the original uploader is typically an admin doing testing/maintenance and is the most likely person to notice the inconsistency. Sits next to Branch B in `/api/ingest/route.ts`.
+8. **Pending pre-check refinement (NEW 2026-04-26)** — `/api/ingest` short-circuits on any `pending_documents` row with non-empty `races_extracted` (treats it as "user is mid-pipeline"), even when the extraction is fully complete (`races_pending = []`). Stale completed pending rows mask the polished Branch B / coverage check UX until they expire 24h after race date. Fix: distinguish partial (`races_pending` non-empty → mid-pipeline, return ready) from complete (`races_pending` empty → fall through to dedup). Hit during Branch B verification on 2026-04-26 — manual `DELETE FROM pending_documents WHERE id = ...` worked as workaround. Low risk, ~30 min fix.
+9. **Pending re-entry UI** — on Brain page load, check `pending_documents` for unexpired unextracted races; surface prompt in chat. Edge case but real (browser closes mid-extraction).
+10. **PP history extraction** — extract prior race lines per horse (Beyer figures, fractions from past starts) as separate performance records.
+11. **Phase 2 gated data access** — `brain_layer='gated'`, `user_data_access` table, upload = access unlock.
+12. **Conversation management** — list/switch/delete conversations from Brain UI.
+13. **Racing API entries integration** — build `/api/racing/entries` once Path A/B schema confirmed; write to `races` + `performance` + `horses` with `source='racing_api'`.
+14. **Real-time feed** — Supabase Realtime subscription on posts instead of full refetch.
+15. **Drop `user_documents` table** — migration to remove the table and its reference in `account/delete/route.ts` once confirmed nothing depends on it.
+16. **Chunked extraction (Option B)** — replace single-call extraction with two-pass flow (race shell + horse roster, then loop horses N at a time). Solves the token wall on big fields without requiring manual page-by-page admin uploads. Post-Derby refactor. Reuses existing `PRIMARY_SYSTEM` for shell pass, needs new `HORSE_BATCH_SYSTEM` for horse passes. Watch for partial-write bugs (pass 1 succeeds, pass 2 fails mid-loop).
+17. **AE / scratched / entered status modeling (H-25)** — `performance` table currently has no concept of whether a horse is in the active field. AE rows must be manually deleted today (see Derby ops note below). Schema migration adds `entry_status` enum to `performance`; `buildSchemaContext` filters to entered by default; coverage check counts only entered rows against expected_field_size. Required for any race with AEs to be cleanly handled. Manual deletion is the workaround for Derby 2026.
+18. **RAG / pgvector** — post-Derby.
 
 ---
 
