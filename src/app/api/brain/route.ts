@@ -23,27 +23,351 @@ const BASE_PROMPT = `You are the HiveCap Brain — an expert horse racing analys
 - You never reproduce copyrighted content verbatim — always analyze, summarize, and provide original insights.
 - You are precise, confident, and data-driven. When discussing horses, lead with the most analytically relevant factors.`;
 
+const RACE_HALLUCINATION_GATE =
+  `--- RACE REFERENCE DETECTED — NO BRAIN DATA ---\n` +
+  `The user is asking about a specific race. The Brain has no extracted data for this race. ` +
+  `You MUST state this clearly at the start of your response. Do not present any horse names, ` +
+  `figures, or analysis as Brain Knowledge Base data. Web search is permitted and encouraged; ` +
+  `clearly label all web-sourced information as such.`;
+
 // UI state messages injected by the ingestion pipeline — never pass to Claude.
-// These are assistant turns that reflect pipeline state, not conversation content.
 const UI_STATE_PATTERNS = [
-  /^I (?:found|see) \d+/i,           // scan prompt: "I found N race(s)..."
-  /^Brain updated/i,                   // extraction confirmation
-  /^Got it/i,                          // dedup / ready confirmation
-  /Select a race to extract/i,         // race selector prompt
-  /^We couldn't process/i,             // extraction failure message
-  /^Extraction incomplete/i,           // max_tokens failure
+  /^I (?:found|see) \d+/i,
+  /^Brain updated/i,
+  /^Got it/i,
+  /Select a race to extract/i,
+  /^We couldn't process/i,
+  /^Extraction incomplete/i,
 ];
 
 function isUiStateMessage(content: string): boolean {
   return UI_STATE_PATTERNS.some((p) => p.test(content.trimStart()));
 }
 
-
 export const runtime = "nodejs";
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Detect patterns like "race 5", "race 5 at Churchill", "race 5 on May 2",
+// "Churchill on May 2". Returns null when no usable race anchor is found.
+// ─────────────────────────────────────────────────────────────────────────────
+type RaceRef = {
+  raceNumber: number | null;
+  trackHint: string | null;
+  dateHint: string | null; // ISO YYYY-MM-DD
+};
+
+function extractRaceReference(query: string): RaceRef | null {
+  const lower = query.toLowerCase();
+
+  const raceNumMatch = lower.match(/\brace\s+(\d{1,2})\b/);
+  const raceNumber = raceNumMatch ? parseInt(raceNumMatch[1]) : null;
+
+  // Track hint: word(s) after "at", "in", or "on" that start with a capital
+  const trackMatch = query.match(/\b(?:at|in)\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,2})\b/);
+  const trackHint = trackMatch ? trackMatch[1] : null;
+
+  // Date hint: "May 2", "April 5", etc. — assume 2026
+  const MONTHS: Record<string, number> = {
+    jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3,
+    apr: 4, april: 4, may: 5, jun: 6, june: 6, jul: 7, july: 7,
+    aug: 8, august: 8, sep: 9, september: 9, oct: 10, october: 10,
+    nov: 11, november: 11, dec: 12, december: 12,
+  };
+  let dateHint: string | null = null;
+  const dateMatch = lower.match(
+    /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})\b/
+  );
+  if (dateMatch) {
+    const mon = MONTHS[dateMatch[1]];
+    const day = parseInt(dateMatch[2]);
+    if (mon && day >= 1 && day <= 31) {
+      dateHint = `2026-${String(mon).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    }
+  }
+
+  // Need at least a race number, or both a track and a date
+  if (raceNumber == null && (trackHint == null || dateHint == null)) return null;
+
+  return { raceNumber, trackHint, dateHint };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Resolve a RaceRef to a single race_id. Returns null when ambiguous or absent.
+// ─────────────────────────────────────────────────────────────────────────────
+async function resolveRace(
+  ref: RaceRef,
+  admin: ReturnType<typeof createAdminClient>,
+): Promise<string | null> {
+  let trackId: string | null = null;
+
+  if (ref.trackHint) {
+    const { data: byName } = await admin
+      .from("tracks")
+      .select("id")
+      .ilike("name", `%${ref.trackHint}%`)
+      .limit(1)
+      .maybeSingle();
+    trackId = byName?.id ?? null;
+
+    if (!trackId) {
+      const { data: byAbbr } = await admin
+        .from("tracks")
+        .select("id")
+        .ilike("abbreviation", `%${ref.trackHint}%`)
+        .limit(1)
+        .maybeSingle();
+      trackId = byAbbr?.id ?? null;
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let q = admin.from("races").select("id") as any;
+  if (ref.raceNumber != null) q = q.eq("race_number", ref.raceNumber);
+  if (ref.dateHint) q = q.eq("race_date", ref.dateHint);
+  if (trackId) q = q.eq("track_id", trackId);
+
+  const { data, error } = await q.limit(1).maybeSingle();
+  if (error) {
+    console.error("[brain/resolveRace] error:", error.message);
+    return null;
+  }
+  return (data as { id: string } | null)?.id ?? null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Build context for a fully resolved race: all entries + prior PP history.
+// No horse or row cap — returns the complete field.
+// ─────────────────────────────────────────────────────────────────────────────
+async function buildRaceAnchoredContext(
+  raceId: string,
+  admin: ReturnType<typeof createAdminClient>,
+): Promise<string> {
+  const { data: race } = await admin
+    .from("races")
+    .select("race_number, race_name, race_date, distance, surface, condition, class_level, purse, tracks(name, abbreviation)")
+    .eq("id", raceId)
+    .single();
+
+  type EntryRow = {
+    horse_id: string;
+    finish_position: number | null;
+    odds: number | null;
+    beyer_figure: number | null;
+    equibase_speed_fig: number | null;
+    timeform_rating: number | null;
+    frac_quarter: string | null;
+    frac_half: string | null;
+    frac_three_quarters: string | null;
+    final_time: string | null;
+    running_style: string | null;
+    weight_carried: number | null;
+    trip_notes: string | null;
+    trouble_line: string | null;
+    horses: {
+      id: string; name: string; sire: string | null; dam: string | null;
+      dam_sire: string | null; trainer: string | null; jockey: string | null;
+      owner: string | null; age: number | null; sex: string | null; notes: string | null;
+    } | {
+      id: string; name: string; sire: string | null; dam: string | null;
+      dam_sire: string | null; trainer: string | null; jockey: string | null;
+      owner: string | null; age: number | null; sex: string | null; notes: string | null;
+    }[] | null;
+  };
+
+  const { data: entries, error: entryErr } = await admin
+    .from("performance")
+    .select(`
+      horse_id, finish_position, odds,
+      beyer_figure, equibase_speed_fig, timeform_rating,
+      frac_quarter, frac_half, frac_three_quarters, final_time,
+      running_style, weight_carried, trip_notes, trouble_line,
+      horses(id, name, sire, dam, dam_sire, trainer, jockey, owner, age, sex, notes)
+    `)
+    .eq("race_id", raceId);
+
+  if (entryErr) console.error("[brain/raceContext] entries error:", entryErr.message);
+  if (!entries || entries.length === 0) return "";
+
+  const horseIds = (entries as EntryRow[]).map((e) => e.horse_id);
+
+  // Prior race history for all horses in this race — batch, no N+1
+  type PriorRow = {
+    horse_id: string;
+    finish_position: number | null;
+    beyer_figure: number | null;
+    equibase_speed_fig: number | null;
+    frac_quarter: string | null;
+    frac_half: string | null;
+    frac_three_quarters: string | null;
+    final_time: string | null;
+    running_style: string | null;
+    odds: number | null;
+    trip_notes: string | null;
+    races: {
+      race_date?: string; race_number?: number; distance?: string;
+      surface?: string; condition?: string; class_level?: string;
+      tracks?: { name?: string; abbreviation?: string } | { name?: string; abbreviation?: string }[] | null;
+    } | null;
+  };
+
+  const { data: priorPerfs } = await admin
+    .from("performance")
+    .select(`
+      horse_id, finish_position, beyer_figure, equibase_speed_fig,
+      frac_quarter, frac_half, frac_three_quarters, final_time,
+      running_style, odds, trip_notes,
+      races(race_date, race_number, distance, surface, condition, class_level, tracks(name, abbreviation))
+    `)
+    .in("horse_id", horseIds)
+    .neq("race_id", raceId)
+    .limit(horseIds.length * 5);
+
+  const priorByHorse = new Map<string, PriorRow[]>();
+  for (const p of (priorPerfs ?? []) as PriorRow[]) {
+    const list = priorByHorse.get(p.horse_id) ?? [];
+    list.push(p);
+    priorByHorse.set(p.horse_id, list);
+  }
+
+  const lines: string[] = ["--- Brain Knowledge Base — Extracted Racing Data ---", ""];
+
+  if (race) {
+    const track = Array.isArray(race.tracks) ? race.tracks[0] : race.tracks;
+    const header = [
+      `RACE ${race.race_number}`,
+      race.race_name ? `— ${race.race_name}` : null,
+      track?.name ? `at ${track.name}` : null,
+      race.race_date,
+      [race.distance, race.surface].filter(Boolean).join(" "),
+      race.condition ? `(${race.condition})` : null,
+      race.class_level ?? null,
+      race.purse ? `Purse: $${Number(race.purse).toLocaleString()}` : null,
+    ].filter(Boolean).join(" · ");
+    lines.push(header);
+    lines.push("");
+  }
+
+  for (const entry of entries as EntryRow[]) {
+    const horse = Array.isArray(entry.horses) ? entry.horses[0] : entry.horses;
+    if (!horse) continue;
+
+    lines.push(
+      [
+        `HORSE: ${horse.name}`,
+        horse.sex ? `(${horse.sex})` : null,
+        horse.age ? `Age ${horse.age}` : null,
+      ].filter(Boolean).join(" ")
+    );
+
+    const breeding = [
+      horse.sire ? `Sire: ${horse.sire}` : null,
+      horse.dam ? `Dam: ${horse.dam}` : null,
+      horse.dam_sire ? `Dam Sire: ${horse.dam_sire}` : null,
+    ].filter(Boolean).join(" | ");
+    if (breeding) lines.push(`  Breeding: ${breeding}`);
+
+    const connections = [
+      horse.trainer ? `Trainer: ${horse.trainer}` : null,
+      horse.jockey ? `Jockey: ${horse.jockey}` : null,
+      horse.owner ? `Owner: ${horse.owner}` : null,
+    ].filter(Boolean).join(" | ");
+    if (connections) lines.push(`  Connections: ${connections}`);
+
+    if (horse.notes) lines.push(`  Notes: ${horse.notes}`);
+
+    const entryData = [
+      entry.finish_position != null ? `Finish: ${entry.finish_position}` : null,
+      entry.odds != null ? `ML Odds: ${entry.odds}` : null,
+      entry.beyer_figure != null ? `Beyer: ${entry.beyer_figure}` : null,
+      entry.equibase_speed_fig != null ? `EQ: ${entry.equibase_speed_fig}` : null,
+      entry.timeform_rating != null ? `TF: ${entry.timeform_rating}` : null,
+      entry.frac_quarter ? `Q: ${entry.frac_quarter}` : null,
+      entry.frac_half ? `H: ${entry.frac_half}` : null,
+      entry.frac_three_quarters ? `¾: ${entry.frac_three_quarters}` : null,
+      entry.final_time ? `Final: ${entry.final_time}` : null,
+      entry.running_style ? `Style: ${entry.running_style}` : null,
+      entry.weight_carried != null ? `Wt: ${entry.weight_carried}` : null,
+    ].filter(Boolean).join(" | ");
+    if (entryData) lines.push(`  This Race: ${entryData}`);
+    if (entry.trip_notes) lines.push(`  Trip: ${entry.trip_notes}`);
+    if (entry.trouble_line) lines.push(`  Trouble: ${entry.trouble_line}`);
+
+    const prior = (priorByHorse.get(entry.horse_id) ?? [])
+      .sort((a, b) => (b.races?.race_date ?? "").localeCompare(a.races?.race_date ?? ""))
+      .slice(0, 3);
+
+    if (prior.length > 0) {
+      lines.push("  Prior Races:");
+      for (const p of prior) {
+        const r = p.races;
+        const t = Array.isArray(r?.tracks) ? r?.tracks[0] : r?.tracks;
+        const raceLine = [
+          r?.race_date,
+          t?.name ?? t?.abbreviation ?? "Unknown",
+          r?.race_number != null ? `Race ${r.race_number}` : null,
+          [r?.distance, r?.surface].filter(Boolean).join(" "),
+          r?.condition ? `(${r.condition})` : null,
+        ].filter(Boolean).join(" · ");
+        const perfLine = [
+          p.finish_position != null ? `Finish: ${p.finish_position}` : null,
+          p.beyer_figure != null ? `Beyer: ${p.beyer_figure}` : null,
+          p.equibase_speed_fig != null ? `EQ: ${p.equibase_speed_fig}` : null,
+          p.frac_quarter ? `Q: ${p.frac_quarter}` : null,
+          p.frac_half ? `H: ${p.frac_half}` : null,
+          p.running_style ? `Style: ${p.running_style}` : null,
+          p.odds != null ? `Odds: ${p.odds}` : null,
+        ].filter(Boolean).join(" | ");
+        if (raceLine) lines.push(`    ${raceLine}`);
+        if (perfLine) lines.push(`    ${perfLine}`);
+        if (p.trip_notes) lines.push(`    Trip: ${p.trip_notes}`);
+      }
+    }
+
+    lines.push("");
+  }
+
+  // Connections for trainers/jockeys in the field
+  const trainerNames: string[] = [];
+  const jockeyNames: string[] = [];
+  for (const entry of entries as EntryRow[]) {
+    const horse = Array.isArray(entry.horses) ? entry.horses[0] : entry.horses;
+    if (!horse) continue;
+    if (horse.trainer) trainerNames.push(horse.trainer);
+    if (horse.jockey) jockeyNames.push(horse.jockey);
+  }
+  const connNames = [
+    ...Array.from(new Set(trainerNames)).slice(0, 10),
+    ...Array.from(new Set(jockeyNames)).slice(0, 10),
+  ];
+
+  if (connNames.length > 0) {
+    const { data: conns } = await admin
+      .from("connections")
+      .select("name, role, win_pct, itm_pct, roi, specialty_distance, specialty_surface, notes")
+      .in("name", connNames);
+
+    if (conns && conns.length > 0) {
+      lines.push("CONNECTIONS:");
+      for (const c of conns) {
+        const stats = [
+          c.win_pct != null ? `Win: ${c.win_pct}%` : null,
+          c.itm_pct != null ? `ITM: ${c.itm_pct}%` : null,
+          c.roi != null ? `ROI: ${c.roi}` : null,
+          c.specialty_distance ? `Dist: ${c.specialty_distance}` : null,
+          c.specialty_surface ? `Surface: ${c.specialty_surface}` : null,
+        ].filter(Boolean).join(" | ");
+        lines.push(`  ${c.name} (${c.role})${stats ? ` — ${stats}` : ""}`);
+        if (c.notes) lines.push(`    ${c.notes}`);
+      }
+      lines.push("");
+    }
+  }
+
+  return lines.join("\n");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Extract candidate horse/track name terms from the user query.
-// Matches sequences of 1–4 capitalized words, skips common stop words.
 // ─────────────────────────────────────────────────────────────────────────────
 function extractQueryTerms(query: string): string[] {
   if (!query) return [];
@@ -74,20 +398,37 @@ function extractQueryTerms(query: string): string[] {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Build structured context from horses/races/performance/connections tables.
-// Returns empty string if no horses found for this user.
+// Build structured context. Returns { context, gate } where gate is the
+// hallucination guard string (non-null only when a race ref was detected but
+// couldn't be resolved to data).
 // ─────────────────────────────────────────────────────────────────────────────
 async function buildSchemaContext(
   userId: string,
   userQuery: string,
   admin: ReturnType<typeof createAdminClient>,
-): Promise<string> {
+): Promise<{ context: string; gate: string | null }> {
+
+  // ── Race-anchored path ────────────────────────────────────────────────────
+  const raceRef = extractRaceReference(userQuery);
+  if (raceRef) {
+    console.log("[brain/schema] race ref detected:", JSON.stringify(raceRef));
+    const raceId = await resolveRace(raceRef, admin);
+    console.log("[brain/schema] resolved race_id:", raceId ?? "null");
+    if (!raceId) {
+      return { context: "", gate: RACE_HALLUCINATION_GATE };
+    }
+    const context = await buildRaceAnchoredContext(raceId, admin);
+    if (!context) {
+      return { context: "", gate: RACE_HALLUCINATION_GATE };
+    }
+    console.log("[brain/schema] race-anchored context chars:", context.length);
+    return { context, gate: null };
+  }
+
+  // ── Term-match + baseline path ────────────────────────────────────────────
   const terms = extractQueryTerms(userQuery);
   console.log("[brain/schema] userId:", userId, "| query terms:", terms);
-  console.log("[brain/schema] filter: uploaded_by.eq." + userId + " OR brain_layer.eq.shared");
 
-  // Diagnostic: check how many horses exist with uploaded_by = userId specifically.
-  // This confirms whether the extract route wrote uploaded_by correctly for this user.
   const { count: uploadedByCount, error: countErr } = await admin
     .from("horses")
     .select("id", { count: "exact", head: true })
@@ -95,24 +436,23 @@ async function buildSchemaContext(
   if (countErr) console.error("[brain/schema] uploaded_by count error:", countErr.message);
   console.log("[brain/schema] horses with uploaded_by =", userId, ":", uploadedByCount ?? 0);
 
-  // Fetch all horses owned by this user OR in the shared Brain (up to 50).
-  // This is the baseline — ensures the Brain always has context for the user's
-  // own data even when the query contains no exact horse name.
+  // Baseline limit raised to 500 — shared Brain now has 200+ horses and will grow.
+  // A 50-row cap caused shared horses outside the top-50 (by created_at) to be
+  // invisible to lowercase matching, producing silent misses on valid queries.
   const { data: ownHorses, error: ownErr } = await admin
     .from("horses")
     .select("id, name, sire, dam, dam_sire, trainer, jockey, owner, age, sex, notes")
     .or(`uploaded_by.eq.${userId},brain_layer.eq.shared`)
     .order("created_at", { ascending: false })
-    .limit(50);
+    .limit(500);
 
   if (ownErr) console.error("[brain/schema] ownHorses query error:", ownErr.message);
   console.log(
     "[brain/schema] ownHorses rows:", ownHorses?.length ?? 0,
-    "| names:", ownHorses?.map((h) => h.name).join(", ") || "none",
+    "| names:", ownHorses?.slice(0, 10).map((h) => h.name).join(", ") || "none",
   );
 
-  // Term-match search: additionally prioritise horses whose name matches query terms.
-  // Scoped to this user's horses OR shared Brain horses — never other users' personal data.
+  // Term-match search
   const termMatches: NonNullable<typeof ownHorses> = [];
   if (terms.length > 0) {
     for (const term of terms.slice(0, 4)) {
@@ -127,8 +467,7 @@ async function buildSchemaContext(
     console.log("[brain/schema] termMatches rows:", termMatches.length);
   }
 
-  // Lowercase fallback: find horses in the baseline whose name appears anywhere in the query.
-  // Catches queries where the user types a horse name in lowercase (missed by the capitalized-word regex).
+  // Lowercase fallback — now covers the full 500-row baseline
   const lowercaseMatches: NonNullable<typeof ownHorses> = [];
   if (ownHorses && ownHorses.length > 0) {
     const queryLower = userQuery.toLowerCase();
@@ -139,8 +478,7 @@ async function buildSchemaContext(
     }
   }
 
-  // Merge: lowercase matches first (explicit mention), then capitalized term matches,
-  // then own/shared baseline; dedup by id.
+  // Merge: explicit mentions first, then term matches, then baseline
   const seen = new Set<string>();
   const horses = [...lowercaseMatches, ...termMatches, ...(ownHorses ?? [])].filter((h) => {
     if (seen.has(h.id)) return false;
@@ -150,15 +488,13 @@ async function buildSchemaContext(
 
   console.log("[brain/schema] merged horse count:", horses.length);
 
-  if (horses.length === 0) return "";
+  if (horses.length === 0) return { context: "", gate: null };
 
   const lines: string[] = [
     "--- Brain Knowledge Base — Extracted Racing Data ---",
     "",
   ];
 
-  // FIX 1: Single batch query for all performances (replaces N+1 per-horse loop).
-  // FIX 6: Include all fraction fields.
   const topHorses = horses.slice(0, 15);
   const horseIds = topHorses.map((h) => h.id);
 
@@ -210,9 +546,8 @@ async function buildSchemaContext(
       )
     `)
     .in("horse_id", horseIds)
-    .limit(120); // 8 per horse × 15 horses
+    .limit(120);
 
-  // Group performances by horse_id for O(1) lookup in rendering loop
   const perfsByHorseId = new Map<string, PerfRow[]>();
   for (const p of (allPerfs ?? []) as PerfRow[]) {
     const list = perfsByHorseId.get(p.horse_id) ?? [];
@@ -221,12 +556,13 @@ async function buildSchemaContext(
   }
 
   for (const horse of topHorses) {
-    const header = [
-      `HORSE: ${horse.name}`,
-      horse.sex ? `(${horse.sex})` : null,
-      horse.age ? `Age ${horse.age}` : null,
-    ].filter(Boolean).join(" ");
-    lines.push(header);
+    lines.push(
+      [
+        `HORSE: ${horse.name}`,
+        horse.sex ? `(${horse.sex})` : null,
+        horse.age ? `Age ${horse.age}` : null,
+      ].filter(Boolean).join(" ")
+    );
 
     const breeding = [
       horse.sire ? `Sire: ${horse.sire}` : null,
@@ -247,7 +583,6 @@ async function buildSchemaContext(
     const perfs = perfsByHorseId.get(horse.id) ?? [];
 
     if (perfs.length > 0) {
-      // Sort by race_date descending client-side
       const sorted = [...perfs]
         .sort((a, b) => {
           const da = a.races?.race_date ?? "";
@@ -303,7 +638,6 @@ async function buildSchemaContext(
     lines.push("");
   }
 
-  // Connections stats for all trainers/jockeys in the result set
   const trainerNames = Array.from(new Set(horses.map((h) => h.trainer).filter((n): n is string => !!n)));
   const jockeyNames = Array.from(new Set(horses.map((h) => h.jockey).filter((n): n is string => !!n)));
   const allConnNames = [...trainerNames.slice(0, 5), ...jockeyNames.slice(0, 5)];
@@ -331,11 +665,10 @@ async function buildSchemaContext(
     }
   }
 
-  return lines.join("\n");
+  return { context: lines.join("\n"), gate: null };
 }
 
 export async function POST(request: Request) {
-  // ── Startup env checks ──────────────────────────────────────────────────────
   if (!process.env.ANTHROPIC_API_KEY) {
     console.error("[brain] FATAL: ANTHROPIC_API_KEY is not set");
     return new Response(JSON.stringify({ error: "Server misconfiguration: missing API key" }), {
@@ -368,9 +701,7 @@ export async function POST(request: Request) {
 
     const admin = createAdminClient();
 
-    // ── Shared community intelligence (Rule D) ─────────────────────────────────
-    // relevantCommunityContext — query-relevant posts at 300 chars (gate check + no-schema Claude input)
-    // cappedCommunityContext   — top 3 query-relevant posts at 200 chars (schema-present Claude input)
+    // ── Community intelligence ─────────────────────────────────────────────
     let sharedIntelligenceContext = "";
     let relevantCommunityContext = "";
     let cappedCommunityContext = "";
@@ -401,9 +732,6 @@ export async function POST(request: Request) {
         const entries300 = sharedPosts.map((p) => makeEntry(p, 300));
         sharedIntelligenceContext = COMMUNITY_HEADER + entries300.join("\n\n");
 
-        // Relevance filter — minimum match term length of 6 chars to exclude generic
-        // words like "Derby" (5), "Race" (4), "Stakes" (6 — borderline, kept for specificity).
-        // This prevents posts about Arkansas Derby bleeding into Wood Memorial queries.
         const queryTerms = extractQueryTerms(user_message ?? "");
         const queryWords = (user_message ?? "")
           .toLowerCase()
@@ -420,11 +748,10 @@ export async function POST(request: Request) {
 
         if (relevantPosts.length > 0) {
           relevantCommunityContext = COMMUNITY_HEADER + relevantPosts.map((p) => makeEntry(p, 300)).join("\n\n");
-          // Schema-present cap: 3 most relevant posts at 200 chars each — schema data dominates
           cappedCommunityContext = COMMUNITY_HEADER + relevantPosts.slice(0, 3).map((p) => makeEntry(p, 200)).join("\n\n");
         }
 
-        console.log("[brain] community posts — total:", sharedPosts.length, "| relevant to query:", relevantPosts.length);
+        console.log("[brain] community posts — total:", sharedPosts.length, "| relevant:", relevantPosts.length);
       }
     } catch (err) {
       const e = err as Error & { cause?: unknown };
@@ -432,7 +759,7 @@ export async function POST(request: Request) {
       if (e?.cause) console.error("[brain] community posts cause:", e.cause);
     }
 
-    // ── Auth ───────────────────────────────────────────────────────────────────
+    // ── Auth ───────────────────────────────────────────────────────────────
     let userId: string | null = null;
     try {
       const supabase = createClient();
@@ -451,18 +778,21 @@ export async function POST(request: Request) {
       if (e?.cause) console.error("[brain] auth cause:", e.cause);
     }
 
-    // ── Schema context (primary knowledge source) ─────────────────────────────
+    // ── Schema context ─────────────────────────────────────────────────────
     let schemaContext = "";
+    let hallucGate: string | null = null;
     if (userId) {
       try {
-        schemaContext = await buildSchemaContext(userId, user_message ?? "", admin);
-        console.log("[brain] final schema context chars:", schemaContext.length);
+        const result = await buildSchemaContext(userId, user_message ?? "", admin);
+        schemaContext = result.context;
+        hallucGate = result.gate;
+        console.log("[brain] schema context chars:", schemaContext.length, "| gate:", hallucGate ? "YES" : "none");
       } catch (err) {
         console.error("[brain] schema context query failed:", (err as Error).message);
       }
     }
 
-    // ── Resolve conversation ───────────────────────────────────────────────────
+    // ── Resolve conversation ───────────────────────────────────────────────
     let activeConvId: string | null = conversation_id ?? null;
 
     if (userId) {
@@ -486,7 +816,7 @@ export async function POST(request: Request) {
       }
     }
 
-    // ── Save user message (fire-and-forget) ────────────────────────────────────
+    // ── Save user message (fire-and-forget) ───────────────────────────────
     if (userId && activeConvId && user_message) {
       const supabase = createClient();
       supabase
@@ -503,20 +833,16 @@ export async function POST(request: Request) {
         });
     }
 
-    // ── Build system prompt ────────────────────────────────────────────────────
-    // Brain Knowledge Base (highest trust) + Community Intelligence (second tier).
-    // When schema is present: cap at 3 relevant posts at 200 chars — schema dominates.
-    // When schema is absent: full relevant post list at 300 chars.
+    // ── Build system prompt ────────────────────────────────────────────────
     const contextParts: string[] = [BASE_PROMPT];
     if (schemaContext) contextParts.push(schemaContext);
+    if (hallucGate) contextParts.push(hallucGate);
     const communityForClaude = schemaContext ? cappedCommunityContext : relevantCommunityContext;
-    if (communityForClaude) {
-      contextParts.push(communityForClaude);
-    }
+    if (communityForClaude) contextParts.push(communityForClaude);
 
     const systemPrompt = contextParts.join("\n\n");
 
-    // ── Validate and trim message list ────────────────────────────────────────
+    // ── Validate and trim message list ────────────────────────────────────
     const anthropicMessages = messages
       .filter((m) => m.role === "user" || m.role === "assistant")
       .filter((m) => !(m.role === "assistant" && isUiStateMessage(m.content)))
@@ -540,7 +866,7 @@ export async function POST(request: Request) {
       });
     }
 
-    // ── Stream ─────────────────────────────────────────────────────────────────
+    // ── Stream ─────────────────────────────────────────────────────────────
     const model = "claude-sonnet-4-6";
     console.log("[brain] prompt budget — system:", systemPrompt.length, "chars | schema:", schemaContext.length, "chars | community:", sharedIntelligenceContext.length, "chars | messages:", anthropicMessages.length);
 
@@ -569,7 +895,6 @@ export async function POST(request: Request) {
     }
     console.error("[brain] Anthropic stream opened successfully");
 
-    // Capture for closure
     const capturedUserId = userId;
     const capturedConvId = activeConvId;
 
@@ -579,8 +904,6 @@ export async function POST(request: Request) {
         let fullText = "";
         try {
           for await (const chunk of stream) {
-            // Only forward text deltas to the client.
-            // Skip input_json_delta (tool call arguments) and all other non-text events.
             if (chunk.type !== "content_block_delta") continue;
             if (chunk.delta?.type !== "text_delta") continue;
             if (!chunk.delta.text) continue;
@@ -596,9 +919,6 @@ export async function POST(request: Request) {
           controller.error(err);
         }
 
-        // ── Persist assistant message + bump conversation updated_at ───────────
-        // fullText contains only accumulated text_delta content — tool_use blocks
-        // are never included, so it is always safe to insert as a plain string.
         if (capturedUserId && capturedConvId && fullText) {
           try {
             const supabase = createClient();
