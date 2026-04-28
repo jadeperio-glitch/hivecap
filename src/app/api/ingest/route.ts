@@ -158,6 +158,54 @@ export async function POST(request: Request) {
       }
     }
 
+    // Cross-user hash short-circuit: if this pdf_hash was already successfully ingested
+    // by anyone AND the resulting horses landed in shared/gated layer, skip extraction entirely.
+    {
+      const { data: priorIngestions } = await admin
+        .from("ingestion_log")
+        .select("pdf_hash, horse_id, status")
+        .eq("pdf_hash", clientHash)
+        .eq("status", "success")
+        .not("horse_id", "is", null);
+
+      if (priorIngestions && priorIngestions.length > 0) {
+        const priorHorseIds = priorIngestions.map((r) => r.horse_id as string);
+        const { data: sharedHorses } = await admin
+          .from("horses")
+          .select("id")
+          .in("id", priorHorseIds)
+          .in("brain_layer", ["shared", "gated"]);
+
+        if (sharedHorses && sharedHorses.length > 0) {
+          console.log("[ingest] hash short-circuit — pdf already in shared Brain:", clientHash, "| matched horses:", sharedHorses.length);
+
+          // Non-fatal log entry — if the DB rejects a new status value, don't fail the response.
+          await admin.from("ingestion_log").insert({
+            user_id: user.id,
+            source: "upload",
+            source_ref: clientHash,
+            pdf_hash: clientHash,
+            horse_id: null,
+            status: "reused_from_shared",
+            notes: JSON.stringify([{
+              field: "hash_short_circuit",
+              note: `pdf_hash already ingested with shared horses; granted access without re-extraction. Matched ${sharedHorses.length} shared horses.`,
+            }]),
+          }).then(({ error }) => {
+            if (error) console.warn("[ingest] hash short-circuit log insert failed (non-fatal):", error.message);
+          });
+
+          return json({
+            status: "reused_from_shared",
+            message: "This document is already in the shared Brain. You can ask questions about it now.",
+            races_pending: 0,
+            races_extracted: 0,
+            total_races: 0,
+          });
+        }
+      }
+    }
+
     // Step 1: All ingestion_log rows for this hash (successful/partial extractions only)
     const { data: logRows } = await admin
       .from("ingestion_log")

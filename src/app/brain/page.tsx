@@ -252,6 +252,17 @@ export default function BrainPage() {
         return;
       }
 
+      if (data.status === "reused_from_shared") {
+        // Hash short-circuit: pdf already in shared Brain, no extraction needed
+        setUploadStatus("done");
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: data.message ?? "This race PDF is already in the Brain. You can ask questions about it now." },
+        ]);
+        setTimeout(() => setUploadStatus("idle"), 3000);
+        return;
+      }
+
       if (data.status === "already_covered") {
         // Coverage check: all races already fully seeded in shared Brain.
         // No pending_document was created — nothing to extract.

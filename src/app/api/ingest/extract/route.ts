@@ -380,9 +380,8 @@ export async function POST(request: Request) {
     // ── Step 3: Claude extraction call ────────────────────────────────────────
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-    // Admin bypass: no text truncation limit.
-    const textLimit = isAdmin ? extractedText.length : 12000;
-    console.log("[ingest/extract] text length:", extractedText.length, "| sending:", Math.min(extractedText.length, textLimit), "chars");
+    const textLimit = extractedText.length;
+    console.log("[ingest/extract] text length:", extractedText.length, "| sending:", textLimit, "chars");
 
     let extraction: ExtractionResult;
     try {
@@ -618,14 +617,41 @@ export async function POST(request: Request) {
               field: "horse_pedigree_conflict",
               note: `pedigree_conflict: name="${horseData.name}" existing_sire="${conflictMatch.sire ?? ''}" incoming_sire="${horseData.sire ?? ''}" existing_dam="${conflictMatch.dam ?? ''}" incoming_dam="${horseData.dam ?? ''}"`,
             });
+          } else if (!normalizedIncomingSire || !normalizedIncomingDam) {
+            // Rule 4: incoming pedigree null/empty
+            // Rule 4a: if a shared/gated+confirmed candidate has full pedigree, reuse it
+            const sharedConfirmedCandidate = nameFilteredMatches.find((h) =>
+              (h.brain_layer === "shared" || h.brain_layer === "gated") &&
+              h.merge_confirmed === true &&
+              !!h.sire && !!h.dam
+            );
+
+            if (sharedConfirmedCandidate) {
+              // Rule 4a: reuse confirmed shared horse — do not update its pedigree with null incoming
+              horseId = sharedConfirmedCandidate.id;
+              mergeConfirmed = true;
+              flags.push({
+                field: "horse_pedigree_inferred_from_shared",
+                note: `pedigree_inferred_from_shared: name="${horseData.name}" used_horse_id="${sharedConfirmedCandidate.id}" reason="incoming_extraction_lacked_pedigree"`,
+              });
+              if (isAdmin && sharedConfirmedCandidate.brain_layer === "personal") {
+                await admin.from("horses").update({ brain_layer: "shared" }).eq("id", horseId);
+              }
+            } else {
+              // Rule 4b: no confirmed shared candidate → insert new row
+              flags.push({
+                field: "horse_pedigree_incomplete",
+                note: `pedigree_incomplete: name="${horseData.name}"`,
+              });
+            }
           } else {
-            // Rule 4: name matches but at least one side missing pedigree → do not auto-merge
+            // Incoming has pedigree but candidate pedigree is null — treat as incomplete (per spec)
             flags.push({
               field: "horse_pedigree_incomplete",
               note: `pedigree_incomplete: name="${horseData.name}"`,
             });
           }
-          // horseId remains null → insert new row below
+          // horseId remains null → insert new row below (Rules 3, 4b, candidate-null cases)
         }
       }
 
