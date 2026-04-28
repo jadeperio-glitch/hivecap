@@ -26,6 +26,20 @@ function sourcePriority(source: string | null | undefined): number {
   return SOURCE_PRIORITY[source ?? ""] ?? 0;
 }
 
+/**
+ * Strips parenthetical content (e.g. "(Curlin)") for merge comparison only.
+ * Raw values are still written to columns unchanged.
+ */
+function normalizePedigree(value: string | null | undefined): string {
+  if (!value) return '';
+  return value.replace(/\s*\(.*?\)\s*/g, '').trim().toLowerCase();
+}
+
+function normalizeName(value: string | null | undefined): string {
+  if (!value) return '';
+  return value.trim().toLowerCase();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Primary extraction prompt (Step 3, race_index = 1 or first user selection)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -537,40 +551,40 @@ export async function POST(request: Request) {
       if (!horseData.name) continue;
 
       // ── Step 5: Horse resolution ──────────────────────────────────────────
+      // Scope: user's own rows + all shared/gated rows.
+      // Branch B: non-admin uploads resolve into existing shared rows — no personal duplicates.
+      const { data: candidateHorses } = await admin
+        .from("horses")
+        .select("id, name, sire, dam, merge_confirmed, canonical_source, source, brain_layer, uploaded_by")
+        .or(`uploaded_by.eq.${user.id},brain_layer.in.(shared,gated)`);
+
+      const normalizedIncomingName = normalizeName(horseData.name);
+      const normalizedIncomingSire = normalizePedigree(horseData.sire);
+      const normalizedIncomingDam = normalizePedigree(horseData.dam);
+
+      // Filter in code: normalize name first, then evaluate pedigree per rule below
+      const nameFilteredMatches = (candidateHorses ?? []).filter(
+        (h) => normalizeName(h.name) === normalizedIncomingName
+      );
+
       let horseId: string | null = null;
       let mergeConfirmed = false;
 
-      // Pass 1: exact name match (case-insensitive)
-      const { data: nameMatches } = await admin
-        .from("horses")
-        .select("id, name, sire, dam, merge_confirmed, canonical_source, source, brain_layer")
-        .ilike("name", horseData.name)
-        .limit(5);
-
-      if (nameMatches && nameMatches.length > 0) {
-        // Pass 2: confirm sire + dam.
-        // A mismatch (both sides have data, values differ) is a collision — don't merge.
-        // If one or both sides have no pedigree data, merge tentatively (merge_confirmed = false).
-        const fullMatch = nameMatches.find((h) => {
-          const sireConflict = !!horseData.sire && !!h.sire &&
-            h.sire.toLowerCase() !== horseData.sire.toLowerCase();
-          const damConflict = !!horseData.dam && !!h.dam &&
-            h.dam.toLowerCase() !== horseData.dam.toLowerCase();
-          return !sireConflict && !damConflict;
+      if (nameFilteredMatches.length > 0) {
+        // Rule 1: all four pedigree values present and both match → confirmed merge
+        const confirmedMatch = nameFilteredMatches.find((h) => {
+          const esSire = normalizePedigree(h.sire);
+          const esDam = normalizePedigree(h.dam);
+          return normalizedIncomingSire && normalizedIncomingDam && esSire && esDam &&
+            esSire === normalizedIncomingSire && esDam === normalizedIncomingDam;
         });
 
-        if (fullMatch) {
-          horseId = fullMatch.id;
-          // Only set merge_confirmed if pedigree was actually confirmed on at least one side
-          const sireConfirmed = !!horseData.sire && !!fullMatch.sire &&
-            fullMatch.sire.toLowerCase() === horseData.sire.toLowerCase();
-          const damConfirmed = !!horseData.dam && !!fullMatch.dam &&
-            fullMatch.dam.toLowerCase() === horseData.dam.toLowerCase();
-          mergeConfirmed = sireConfirmed || damConfirmed;
+        if (confirmedMatch) {
+          horseId = confirmedMatch.id;
+          mergeConfirmed = true;
 
-          // Update merge_confirmed + canonical_source if incoming source is higher priority
           const incomingPriority = sourcePriority("user_upload");
-          const existingPriority = sourcePriority(fullMatch.source);
+          const existingPriority = sourcePriority(confirmedMatch.source);
 
           if (incomingPriority > existingPriority) {
             await admin.from("horses").update({
@@ -580,32 +594,49 @@ export async function POST(request: Request) {
               trainer: horseData.trainer ?? undefined,
               jockey: horseData.jockey ?? undefined,
               // Admin upload promotes personal rows to shared Brain layer
-              ...(isAdmin && fullMatch.brain_layer === "personal" ? { brain_layer: "shared" } : {}),
+              ...(isAdmin && confirmedMatch.brain_layer === "personal" ? { brain_layer: "shared" } : {}),
             }).eq("id", horseId);
           } else {
             await admin.from("horses").update({
               merge_confirmed: true,
-              ...(isAdmin && fullMatch.brain_layer === "personal" ? { brain_layer: "shared" } : {}),
+              ...(isAdmin && confirmedMatch.brain_layer === "personal" ? { brain_layer: "shared" } : {}),
             }).eq("id", horseId);
           }
         } else {
-          // Name matches but sire/dam don't — potential name collision
-          flags.push({
-            field: "horse_name_collision",
-            note: `Name "${horseData.name}" matches existing horse but sire/dam differ. Created new row.`,
+          // Rule 3: name match where both sides have values but at least one pedigree field differs
+          const conflictMatch = nameFilteredMatches.find((h) => {
+            const esSire = normalizePedigree(h.sire);
+            const esDam = normalizePedigree(h.dam);
+            const sireConflict = normalizedIncomingSire && esSire && esSire !== normalizedIncomingSire;
+            const damConflict = normalizedIncomingDam && esDam && esDam !== normalizedIncomingDam;
+            return sireConflict || damConflict;
           });
-          // Fall through to insert below
+
+          if (conflictMatch) {
+            // Rule 3: pedigree conflict → new row + log
+            flags.push({
+              field: "horse_pedigree_conflict",
+              note: `pedigree_conflict: name="${horseData.name}" existing_sire="${conflictMatch.sire ?? ''}" incoming_sire="${horseData.sire ?? ''}" existing_dam="${conflictMatch.dam ?? ''}" incoming_dam="${horseData.dam ?? ''}"`,
+            });
+          } else {
+            // Rule 4: name matches but at least one side missing pedigree → do not auto-merge
+            flags.push({
+              field: "horse_pedigree_incomplete",
+              note: `pedigree_incomplete: name="${horseData.name}"`,
+            });
+          }
+          // horseId remains null → insert new row below
         }
       }
 
       if (!horseId) {
-        // No match or name collision — insert new horse row
+        // Rule 1 (no name match) or Rules 3/4 (conflict/incomplete) → insert new row
         const { data: newHorse } = await admin
           .from("horses")
           .insert({
             name: horseData.name,
-            sire: horseData.sire ?? null,
-            dam: horseData.dam ?? null,
+            sire: horseData.sire ?? null,   // raw value preserved — no paren stripping
+            dam: horseData.dam ?? null,     // raw value preserved — no paren stripping
             dam_sire: horseData.dam_sire ?? null,
             trainer: horseData.trainer ?? null,
             jockey: horseData.jockey ?? null,
@@ -613,7 +644,7 @@ export async function POST(request: Request) {
             age: horseData.age ?? null,
             sex: horseData.sex ?? null,
             notes: horseData.notes ?? null,
-            merge_confirmed: mergeConfirmed,
+            merge_confirmed: false,
             source: "user_upload",
             canonical_source: "user_upload",
             brain_layer: brainLayer,
@@ -683,8 +714,8 @@ export async function POST(request: Request) {
           } else {
             // Lower trust — log but don't overwrite
             flags.push({
-              field: "performance_not_overwritten",
-              note: `Existing record has higher trust source (${existingPerf.source}). User upload not applied.`,
+              field: "performance_skip",
+              note: `performance_skip: lower_priority_source — existing: ${existingPerf.source}, incoming: user_upload`,
             });
           }
         } else {
@@ -749,6 +780,20 @@ export async function POST(request: Request) {
       }
 
       results.push({ horse_name: horseData.name, horse_id: horseId, status: "written" });
+    }
+
+    // ── Recompute field_size from distinct horse_ids in performance ────────────
+    if (raceId) {
+      try {
+        const { data: perfRows } = await admin
+          .from("performance")
+          .select("horse_id")
+          .eq("race_id", raceId);
+        const distinctCount = new Set(perfRows?.map((r) => r.horse_id) ?? []).size;
+        await admin.from("races").update({ field_size: distinctCount }).eq("id", raceId);
+      } catch (fieldSizeErr) {
+        console.warn("[ingest/extract] field_size recompute failed:", fieldSizeErr);
+      }
     }
 
     // ── Step 9: Ingestion log write ───────────────────────────────────────────
