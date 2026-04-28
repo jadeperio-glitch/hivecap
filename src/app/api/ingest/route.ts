@@ -179,8 +179,7 @@ export async function POST(request: Request) {
         if (sharedHorses && sharedHorses.length > 0) {
           console.log("[ingest] hash short-circuit — pdf already in shared Brain:", clientHash, "| matched horses:", sharedHorses.length);
 
-          // Non-fatal log entry — if the DB rejects a new status value, don't fail the response.
-          await admin.from("ingestion_log").insert({
+          const { error: logErr } = await admin.from("ingestion_log").insert({
             user_id: user.id,
             source: "upload",
             source_ref: clientHash,
@@ -191,9 +190,8 @@ export async function POST(request: Request) {
               field: "hash_short_circuit",
               note: `pdf_hash already ingested with shared horses; granted access without re-extraction. Matched ${sharedHorses.length} shared horses.`,
             }]),
-          }).then(({ error }) => {
-            if (error) console.warn("[ingest] hash short-circuit log insert failed (non-fatal):", error.message);
           });
+          if (logErr) console.error("[ingest] hash short-circuit log insert failed:", logErr.message, logErr.code, logErr.details);
 
           return json({
             status: "reused_from_shared",
