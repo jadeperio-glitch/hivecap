@@ -26,7 +26,7 @@ AI-powered horse racing intelligence platform. Beta launch anchored to Kentucky 
 
 ---
 
-## Current build status (as of 2026-04-26, updated end-of-day)
+## Current build status (as of 2026-04-28, updated end-of-day)
 
 ### Pages
 
@@ -359,6 +359,11 @@ HIVECAP_ADMIN_USER_IDS=<uuid1>,<uuid2>   ← comma-separated; server-side only
 16. **Chunked extraction (Option B)** — replace single-call extraction with two-pass flow (race shell + horse roster, then loop horses N at a time). Solves the token wall on big fields without requiring manual page-by-page admin uploads. Post-Derby refactor. Reuses existing `PRIMARY_SYSTEM` for shell pass, needs new `HORSE_BATCH_SYSTEM` for horse passes. Watch for partial-write bugs (pass 1 succeeds, pass 2 fails mid-loop).
 17. **AE / scratched / entered status modeling (H-25)** — `performance` table currently has no concept of whether a horse is in the active field. AE rows must be manually deleted today (see Derby ops note below). Schema migration adds `entry_status` enum to `performance`; `buildSchemaContext` filters to entered by default; coverage check counts only entered rows against expected_field_size. Required for any race with AEs to be cleanly handled. Manual deletion is the workaround for Derby 2026.
 18. **RAG / pgvector** — post-Derby.
+19. **DB field_size backfill (Path A)** — most historical races have `field_size = null`. Run one UPDATE pulling `COUNT(DISTINCT horse_id)` per race from the performance table to backfill. Simple maintenance query, no code change needed.
+20. **Duplicate performance row sweep (Path C)** — the pedigree dedup bug fixed 2026-04-28 likely affected races beyond May 1 Races 10/12/13. Sweep all races for `perf_rows > unique_horses` or `unique_horses != confirmed_horses` and clean up. Same pattern as the May 1 manual cleanup.
+21. **Brain_layer drift propagation** — when a horse's `brain_layer` changes (e.g. personal → shared via admin upload), existing `performance` rows for that horse do not auto-update. Currently silent drift. Code-level fix needed: after any horse `brain_layer` update in `extract/route.ts`, run a follow-up `UPDATE performance SET brain_layer = $new WHERE horse_id = $id`.
+22. **Investigate hash short-circuit code path** — commit `5bfb2aa` added cross-user hash short-circuit in `/api/ingest/route.ts`, but the `ingestion_log.insert()` for `status='reused_from_shared'` is silently failing — no row written. The existing pre-check (Branch A/B/C) appears to catch the case before the new code fires. Need to trace which code path actually returns the "already in shared Brain" UI message and either fix the new code or delete it as dead. Commit `3d34ab3` added error logging for diagnosis but the new branch never fires in tests.
+23. **Marked Races UI "Field" column appears stale** — Race 10 May 1 shows 10 instead of 11 after backfill. Probably reading from a different column than `field_size`. Cosmetic only — investigate which column `CoverageClient` renders.
 
 ---
 
@@ -384,6 +389,24 @@ HIVECAP_ADMIN_USER_IDS=<uuid1>,<uuid2>   ← comma-separated; server-side only
 - Branding only changes: do not touch data, routing, or auth logic
 - Keep all API keys in `.env.local` — never hardcode
 - Pronunciation note for any voice/TTS work: Beyer → "BUY-er"
+
+---
+
+## Key learnings & principles
+
+- **Pedigree normalization for merge comparison:** strip parenthetical content (e.g. `(Curlin)`), trim, lowercase. Compare names + normalized sire + normalized dam. Original strings still written to columns unchanged.
+- **Parens after sire = paternal grandsire.** Parens after dam = broodmare sire. Only the latter goes into `dam_sire`. Do not write parenthetical content from the sire field into `dam_sire`.
+- **Performance rows must inherit `brain_layer` from their horse.** When reassigning performance rows during cleanup (or when a horse's layer changes), always check that `performance.brain_layer` follows. Silent drift causes the "Seeded" count in the admin UI to undercount shared rows.
+- **Supabase SQL editor auto-rollbacks transactions across multiple separate query executions.** Use single self-contained snippets without `BEGIN`/`COMMIT` for cleanup work, or run all statements in one submission.
+
+---
+
+## Locked decisions log
+
+- **Pedigree normalization for merge** — strip parens, lowercase, compare normalized — *2026-04-28*
+- **Cross-user hash short-circuit when shared data exists** — silent accept, grant access — *2026-04-28* *(note: implementation may be partially dead code, see open item 22)*
+- **Performance write idempotency by source priority** — lower-priority source never overwrites, logs `performance_skip` flag — *2026-04-28*
+- **Non-admin uploads no longer text-truncated** — full document sent to extractor regardless of user role — *2026-04-28*
 
 ---
 
@@ -415,3 +438,17 @@ HIVECAP_ADMIN_USER_IDS=<uuid1>,<uuid2>   ← comma-separated; server-side only
 **Reference PDF:** `HiveCap_PP_Seeding_SOP.pdf` (one-page printable SOP, generated 2026-04-26).
 
 **Why page-by-page workflow:** single-call extraction hits `max_tokens` ceiling on large fields. Each Derby page contains 3–4 horses, comfortably under the 8192-token output limit. Chunked extraction (item 15 in open build items) replaces this manual workflow post-Derby.
+
+---
+
+## 2026-04-28 — Pedigree dedup, hash short-circuit, brain_layer realignment
+
+### DB cleanup
+- **Races 10, 12, 13 (May 1, Churchill Downs)** had duplicate horse rows created by re-uploads where sire formatting differed (e.g. `Connect (Curlin)` vs `Connect`). Cleaned up: 28 duplicate horse rows + their `performance` rows deleted. `ingestion_log.horse_id` repointed to canonical horse_ids. `field_size` backfilled on all three cleaned races.
+- **`performance.brain_layer` drift discovered and corrected.** When performance rows were reassigned to canonical horses during the dedup cleanup, some rows retained the wrong `brain_layer`. Ran a full-DB realignment: `UPDATE performance SET brain_layer = h.brain_layer FROM horses h WHERE performance.horse_id = h.id AND performance.brain_layer != h.brain_layer`. This is the root cause of the "Seeded 11/17" discrepancy seen in the admin coverage UI for Race 13.
+- **`merge_confirmed` backfill.** All shared horses with non-null sire AND non-null dam were flipped to `merge_confirmed = true` (one-time backfill — many were inserted as `false` by default).
+
+### Code shipped (commits `04de061`, `5bfb2aa`, `3d34ab3`)
+- `extract/route.ts` — pedigree normalization (strip parens, trim, lowercase) for horse merge comparison; four-rule merge logic (confirmed / conflict / incomplete 4a / incomplete 4b); `field_size` recomputed from distinct horse_ids after every performance write; `performance_skip` flag label aligned to spec; non-admin text truncation removed.
+- `/api/ingest/route.ts` — cross-user hash short-circuit added (fires when pdf_hash already in shared Brain); `ingestion_log` audit write for `reused_from_shared` (currently suspected dead code — Branch A/B fires first; see open item 22).
+- `brain/page.tsx` — handles `reused_from_shared` response status from ingest API.
