@@ -379,7 +379,42 @@ async function buildSchemaContext(
 
   const horseIds = merged.map((h) => h.id);
 
-  // Batch performance query — no N+1
+  console.log("[brain/perf-Q] === starting perf query for", horseIds.length, "horseIds ===");
+  console.log("[brain/perf-Q] sample horseIds[0]:", horseIds[0]);
+
+  const perfQuery = await admin
+    .from("performance")
+    .select(`
+      horse_id,
+      finish_position, lengths_beaten,
+      beyer_figure, beyer_source,
+      equibase_speed_fig, equibase_source,
+      timeform_rating, timeform_source,
+      frac_quarter, frac_quarter_sec,
+      frac_half, frac_half_sec,
+      frac_three_quarters, frac_three_quarters_sec,
+      frac_final, frac_final_sec,
+      final_time, running_style, weight_carried, odds,
+      trip_notes, trouble_line,
+      races (
+        race_date, race_number, distance, surface, condition, class_level, purse,
+        tracks ( name, abbreviation )
+      )
+    `)
+    .in("horse_id", horseIds);
+
+  const allPerfs = perfQuery.data;
+  const allPerfsError = perfQuery.error;
+
+  console.log("[brain/perf-Q] perfQuery.error:", allPerfsError ? JSON.stringify(allPerfsError) : "none");
+  console.log("[brain/perf-Q] perfQuery.data type:", typeof allPerfs, "| isArray:", Array.isArray(allPerfs), "| length:", (allPerfs as any[] | null)?.length ?? "null");
+
+  if (allPerfs && allPerfs.length > 0) {
+    const sample = allPerfs[0] as any;
+    console.log("[brain/perf-Q] sample row keys:", Object.keys(sample));
+    console.log("[brain/perf-Q] sample horse_id:", sample.horse_id, "| beyer:", sample.beyer_figure, "| race:", JSON.stringify(sample.races));
+  }
+
   type PerfRow = {
     horse_id: string;
     finish_position: number | null;
@@ -411,36 +446,6 @@ async function buildSchemaContext(
     } | null;
   };
 
-  const { data: allPerfs, error: allPerfsError } = await admin
-    .from("performance")
-    .select(`
-      horse_id,
-      finish_position, lengths_beaten,
-      beyer_figure, beyer_source,
-      equibase_speed_fig, equibase_source,
-      timeform_rating, timeform_source,
-      frac_quarter, frac_quarter_sec,
-      frac_half, frac_half_sec,
-      frac_three_quarters, frac_three_quarters_sec,
-      frac_final, frac_final_sec,
-      final_time, running_style, weight_carried, odds,
-      trip_notes, trouble_line,
-      races (
-        race_date, race_number, distance, surface, condition, class_level, purse,
-        tracks ( name, abbreviation )
-      )
-    `)
-    .in("horse_id", horseIds);
-
-  console.log("[brain/perf] horseIds count:", horseIds.length);
-  console.log("[brain/perf] allPerfs returned rows:", (allPerfs ?? []).length);
-  console.log("[brain/perf] allPerfs error:", allPerfsError?.message ?? "none");
-  if (allPerfs && allPerfs.length > 0) {
-    const sample = allPerfs[0] as any;
-    console.log("[brain/perf] sample row keys:", Object.keys(sample));
-    console.log("[brain/perf] sample horse_id:", sample.horse_id, "| beyer:", sample.beyer_figure, "| race:", JSON.stringify(sample.races));
-  }
-
   const perfByHorse = new Map<string, PerfRow[]>();
   for (const p of (allPerfs ?? []) as PerfRow[]) {
     const list = perfByHorse.get(p.horse_id) ?? [];
@@ -448,10 +453,10 @@ async function buildSchemaContext(
     perfByHorse.set(p.horse_id, list);
   }
 
-  console.log("[brain/perf] perfByHorse map size:", perfByHorse.size);
-  console.log("[brain/perf] perfByHorse keys (first 5):", Array.from(perfByHorse.keys()).slice(0, 5));
-  console.log("[brain/perf] horseIds (first 5):", horseIds.slice(0, 5));
-  console.log("[brain/perf] sample lookup for horseIds[0]:", JSON.stringify(perfByHorse.get(horseIds[0])?.length ?? "MISS"));
+  console.log("[brain/perf-Q] perfByHorse.size:", perfByHorse.size);
+  console.log("[brain/perf-Q] perfByHorse keys (first 3):", Array.from(perfByHorse.keys()).slice(0, 3));
+  console.log("[brain/perf-Q] horseIds (first 3):", horseIds.slice(0, 3));
+  console.log("[brain/perf-Q] === end perf query diagnostic ===");
 
   // Connections batch query — no N+1
   const namesNeeded = new Set<string>();
