@@ -411,7 +411,7 @@ async function buildSchemaContext(
     } | null;
   };
 
-  const { data: allPerfs } = await admin
+  const { data: allPerfs, error: allPerfsError } = await admin
     .from("performance")
     .select(`
       horse_id,
@@ -432,12 +432,26 @@ async function buildSchemaContext(
     `)
     .in("horse_id", horseIds);
 
+  console.log("[brain/perf] horseIds count:", horseIds.length);
+  console.log("[brain/perf] allPerfs returned rows:", (allPerfs ?? []).length);
+  console.log("[brain/perf] allPerfs error:", allPerfsError?.message ?? "none");
+  if (allPerfs && allPerfs.length > 0) {
+    const sample = allPerfs[0] as any;
+    console.log("[brain/perf] sample row keys:", Object.keys(sample));
+    console.log("[brain/perf] sample horse_id:", sample.horse_id, "| beyer:", sample.beyer_figure, "| race:", JSON.stringify(sample.races));
+  }
+
   const perfByHorse = new Map<string, PerfRow[]>();
   for (const p of (allPerfs ?? []) as PerfRow[]) {
     const list = perfByHorse.get(p.horse_id) ?? [];
     list.push(p);
     perfByHorse.set(p.horse_id, list);
   }
+
+  console.log("[brain/perf] perfByHorse map size:", perfByHorse.size);
+  console.log("[brain/perf] perfByHorse keys (first 5):", Array.from(perfByHorse.keys()).slice(0, 5));
+  console.log("[brain/perf] horseIds (first 5):", horseIds.slice(0, 5));
+  console.log("[brain/perf] sample lookup for horseIds[0]:", JSON.stringify(perfByHorse.get(horseIds[0])?.length ?? "MISS"));
 
   // Connections batch query — no N+1
   const namesNeeded = new Set<string>();
@@ -482,6 +496,8 @@ async function buildSchemaContext(
     const perfs = (perfByHorse.get(h.id) ?? [])
       .sort((a, b) => (b.races?.race_date ?? "").localeCompare(a.races?.race_date ?? ""))
       .slice(0, 5);
+
+    console.log(`[brain/perf] horse "${h.name}" id=${h.id} | perfs.length=${perfs.length}`);
 
     if (perfs.length > 0) {
       lines.push("Performance:");
