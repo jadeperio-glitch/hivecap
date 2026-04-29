@@ -292,13 +292,21 @@ async function buildSchemaContext(
     }
   }
 
-  // 3. Top up with recent shared horses for general-context queries
-  const { data: topupHorses } = await admin
-    .from("horses")
-    .select("*")
-    .eq("brain_layer", "shared")
-    .order("created_at", { ascending: false })
-    .limit(TOPUP_CAP);
+  // 3. Top up with recent shared horses ONLY when scope is empty.
+  // When scope resolves to a specific race, topup adds noise without value.
+  let topupHorses: any[] | null = null;
+  if (!scope.hasAny) {
+    const { data } = await admin
+      .from("horses")
+      .select("*")
+      .eq("brain_layer", "shared")
+      .order("created_at", { ascending: false })
+      .limit(TOPUP_CAP);
+    topupHorses = data ?? [];
+    console.log("[brain/schema] topup loaded (no scope):", topupHorses.length);
+  } else {
+    console.log("[brain/schema] topup skipped (scope resolved)");
+  }
 
   // 4. Merge with priority: personal → scoped → topup, dedupe by id
   const seen = new Set<string>();
