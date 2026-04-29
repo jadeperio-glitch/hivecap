@@ -153,25 +153,54 @@ async function extractRaceScope(
   admin: ReturnType<typeof createAdminClient>,
   messages: Array<{ role: string; content: string }>
 ): Promise<RaceScope> {
-  const userMessages = messages.filter((m) => m.role === "user").slice(-6);
-  const blob = userMessages.map((m) => m.content).join("\n");
+  const userMessages = messages.filter((m) => m.role === "user");
+  if (userMessages.length === 0) {
+    return { tracks: [], dates: [], raceNumbers: [], raceNames: [], hasAny: false };
+  }
 
-  const tracks = detectTracks(blob);
-  const dates = detectRaceDates(blob);
-  const raceNumbers = detectRaceNumbers(blob);
-  const raceNames = await detectRaceNames(admin, blob);
+  // Pass 1: detect scope in the LAST user message only.
+  // The active query is the latest message — if it specifies a race, that IS the scope.
+  const lastMessage = userMessages[userMessages.length - 1].content;
+  const lastTracks = detectTracks(lastMessage);
+  const lastDates = detectRaceDates(lastMessage);
+  const lastRaceNumbers = detectRaceNumbers(lastMessage);
+  const lastRaceNames = await detectRaceNames(admin, lastMessage);
+  const lastHasAny =
+    lastTracks.length > 0 ||
+    lastDates.length > 0 ||
+    lastRaceNumbers.length > 0 ||
+    lastRaceNames.length > 0;
 
-  return {
-    tracks,
-    dates,
-    raceNumbers,
-    raceNames,
-    hasAny:
-      tracks.length > 0 ||
-      dates.length > 0 ||
-      raceNumbers.length > 0 ||
-      raceNames.length > 0,
-  };
+  console.log("[brain/schema] scope pass 1 (last message):", lastHasAny, JSON.stringify({
+    tracks: lastTracks, dates: lastDates, raceNumbers: lastRaceNumbers, raceNames: lastRaceNames,
+  }));
+
+  if (lastHasAny) {
+    return {
+      tracks: lastTracks,
+      dates: lastDates,
+      raceNumbers: lastRaceNumbers,
+      raceNames: lastRaceNames,
+      hasAny: true,
+    };
+  }
+
+  // Pass 2: last message has no scope (likely a follow-up question).
+  // Inherit scope from the prior 5 user messages.
+  const priorMessages = userMessages.slice(-6, -1);
+  const priorBlob = priorMessages.map((m) => m.content).join("\n");
+  const tracks = detectTracks(priorBlob);
+  const dates = detectRaceDates(priorBlob);
+  const raceNumbers = detectRaceNumbers(priorBlob);
+  const raceNames = await detectRaceNames(admin, priorBlob);
+  const hasAny =
+    tracks.length > 0 || dates.length > 0 || raceNumbers.length > 0 || raceNames.length > 0;
+
+  console.log("[brain/schema] scope pass 2 (inherited from history):", hasAny, JSON.stringify({
+    tracks, dates, raceNumbers, raceNames,
+  }));
+
+  return { tracks, dates, raceNumbers, raceNames, hasAny };
 }
 
 async function resolveScopedRaceIds(
