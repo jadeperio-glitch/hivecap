@@ -249,6 +249,7 @@ async function buildSchemaContext(
         .select("horse_id")
         .in("race_id", raceIds);
       const horseIds = Array.from(new Set((perfRows ?? []).map((p: any) => p.horse_id)));
+      console.log("[brain/schema] scoped horse_ids from performance:", horseIds.length);
 
       if (horseIds.length > 0) {
         const { data: scoped } = await admin
@@ -257,6 +258,7 @@ async function buildSchemaContext(
           .in("id", horseIds)
           .or(`uploaded_by.eq.${userId},brain_layer.eq.shared`);
         scopedHorses = scoped ?? [];
+        console.log("[brain/schema] scoped horses fetched:", scopedHorses.length, "names:", scopedHorses.slice(0, 25).map((h: any) => h.name));
       }
     }
   }
@@ -272,15 +274,23 @@ async function buildSchemaContext(
   // 4. Merge with priority: personal → scoped → topup, dedupe by id
   const seen = new Set<string>();
   const merged: any[] = [];
-  for (const bucket of [personalHorses ?? [], scopedHorses, topupHorses ?? []]) {
+  const debugBucketCounts = { personal: 0, scoped: 0, topup: 0 };
+  const buckets: Array<[string, any[]]> = [
+    ["personal", personalHorses ?? []],
+    ["scoped", scopedHorses],
+    ["topup", topupHorses ?? []],
+  ];
+  for (const [name, bucket] of buckets) {
     for (const h of bucket) {
       if (seen.has(h.id)) continue;
       if (merged.length >= HORSE_BUDGET) break;
       seen.add(h.id);
       merged.push(h);
+      debugBucketCounts[name as keyof typeof debugBucketCounts]++;
     }
     if (merged.length >= HORSE_BUDGET) break;
   }
+  console.log("[brain/schema] merged composition:", JSON.stringify(debugBucketCounts), "| scoped horse names in merged:", merged.filter(m => scopedHorses.some(s => s.id === m.id)).map(m => m.name));
 
   // 5. Saturation check — log when shared Brain has more than what was returned
   const { count: totalSharedCount } = await admin
