@@ -170,22 +170,27 @@ Pre-check in `/api/ingest` before any PDF processing:
 
 ## Brain context query (LIVE)
 
-`buildSchemaContext` in `brain/route.ts` — two execution paths; race-anchored runs first:
+`buildSchemaContext` in `brain/route.ts` — scope-resolved retrieval, total capped at 100 horses:
 
-**Race-anchored path (added 2026-04-27, commit `c15168c`):**
-- `extractRaceReference(query)` parses patterns like "race N", "race N at <track>", "race N on <date>", "Churchill on May 2". Returns `{ raceNumber, trackHint, dateHint }` or null. Date hints assumed 2026. Returns null if there is no race number AND the query lacks both a track and a date hint (prevents false positives on generic date mentions).
-- `resolveRace(ref)` converts hints to a `races.id`: looks up track via `tracks.name ILIKE '%hint%'` (falls back to `abbreviation`), then queries `races` by `race_number + race_date + track_id`. Returns null if ambiguous or absent.
-- When a race resolves: `buildRaceAnchoredContext(raceId)` fetches **all** performance rows for that race (no horse cap) with joined horse data, plus prior PP history for every horse in the field via a single batch query (no N+1). Connections stats included for all trainers/jockeys in the field.
-- When a race ref is detected but does not resolve (or resolves to zero performance rows): `RACE_HALLUCINATION_GATE` is injected into the system prompt — explicitly tells Claude the Brain has no data for that race, forbids presenting any analysis as Brain Knowledge Base data, permits web search but requires it to be labeled.
-- Vercel function logs: `[brain/schema] race ref detected:` and `[brain/schema] resolved race_id:` confirm parser + DB lookup for future debugging.
+**Horse retrieval (priority order):**
+- Personal horses always included (capped at 100, ordered by `created_at DESC`, never evicted)
+- Race scope detected from last 6 user messages: tracks (KNOWN_TRACKS list), dates (May 2 / 5/2 / 5-2-2026 forms), race numbers ("Race 8", "R8")
+- Scope resolves via `resolveScopedRaceIds` → track name lookup → races query → performance horse_ids → all horses in those races pulled, no row limit per race
+- Top up with recent shared horses (`LIMIT 50`, `created_at DESC`) for general-context queries
+- Final assembly capped at 100 horses total, priority: personal → scoped → topup; deduped by id
+- Saturation logged to `ingestion_log` as `event: "shared_context_saturated"` when total shared > what was returned
+- 500-row OR-baseline removed (was retrieving nondeterministic slice, broke shared Brain access for non-admins once shared Brain exceeded 50 horses)
 
-**Term-match + baseline path (fallback when no race ref detected):**
-- Baseline: fetches horses where `uploaded_by = userId OR brain_layer = 'shared'` (up to **500** — raised from 50 on 2026-04-27; the 50-row cap caused silent misses once the shared Brain exceeded 50 horses; currently 214 shared horses and growing)
-- Term match: `extractQueryTerms` (capitalized sequences) + lowercase fallback against the full 500-row baseline
-- Single batch performance query: `.in("horse_id", horseIds)` + client-side Map grouping (no N+1)
-- Renders top 15 horses with up to 5 prior performances each
-- Includes all fraction fields: `frac_quarter/half/three_quarters` + `_sec` variants
-- Connections stats for all trainers/jockeys in result set
+**Scope detection (`extractRaceScope`):**
+- Scans last 6 user messages (UI state messages already filtered before this runs)
+- `detectTracks`: matches against KNOWN_TRACKS regexes → canonical track names
+- `detectRaceDates`: month-name forms ("May 2", "April 5") + numeric forms ("5/2", "5/2/2026", "5-2-2026")
+- `detectRaceNumbers`: "race N" / "R8" patterns, 1–14 range
+- `resolveScopedRaceIds`: resolves canonical track names → track_ids → races query with all detected filters; capped at 20 race_ids
+
+**System prompt framing:**
+- `KB_FRAMING` prepended before schema context in every turn — tells Claude the KB is a per-turn slice, not the complete database; instructs it to ask for track + race number + date when a horse/race is absent rather than saying "not extracted"
+- `RACE_HALLUCINATION_GATE` removed — replaced by KB_FRAMING behavioral guidance
 
 Community intelligence:
 - Source: reads directly from `posts` table where `brain_verified=true` — NOT from `brain_posts`
@@ -347,6 +352,7 @@ HIVECAP_ADMIN_USER_IDS=<uuid1>,<uuid2>   ← comma-separated; server-side only
 4. ~~**Race coverage check**~~ — **DONE 2026-04-26.** Admin UI at `/admin/coverage`. Migration `20260426_race_coverage.sql` adds 4 columns to `races`. `/api/ingest` short-circuits on covered races, no extraction triggered. Validated end-to-end on Wood Memorial AND Kentucky Derby (2026-05-02 race 12 at Churchill Downs, 20-horse field after AE cleanup). User uploads of fully-covered races render coverage message + 3 clickable prompt chips, zero side effects.
 5. ~~**Branch B response upgrade**~~ — **DONE 2026-04-26 (commit `ee607d0`).** `/api/ingest` Branch B now resolves race info from `ingestion_log.race_id` (added to the dedup query) and returns `status: 'already_covered'` with the same message + prompt chips shape as the coverage check. Validated end-to-end: non-admin user uploading a hash-match seeded PDF (Roxelana S.) gets the polished coverage card. Old log rows without race_id fall back to the bland "ready" message — backward-compatible. Frontend already handles the response shape, no UI changes needed.
 6. ~~**Race-anchored Brain context + baseline cap fix**~~ — **DONE 2026-04-27 (commit `c15168c`).** Two stacked bugs confirmed via `/api/diagnostic/rls-check` (now deleted): RLS was never the issue — 214 shared horses and all 10 Race 5 performance rows were visible to non-admin users. Failure was entirely in `buildSchemaContext`: (1) 50-row baseline cap sliced off horses once shared Brain exceeded 50 entries; raised to 500. (2) No race-anchored context path — queries like "Race 5 at Churchill on May 2" contain no horse names and returned empty context even with full data present. Fixed by `extractRaceReference` + `resolveRace` + `buildRaceAnchoredContext` with hallucination gate for unresolvable refs. See Brain context query section above for full detail.
+6b. ~~**Shared Brain visibility cap**~~ — **CLOSED 2026-04-28.** Replaced LIMIT 500 OR-baseline with scope-resolved retrieval. Personal horses never evicted. Race scope detection covers track + date + race number from last 6 user messages. Topup with 50 most-recent shared horses for general queries. Total budget 100 horses. Saturation logged to `ingestion_log`. `RACE_HALLUCINATION_GATE` removed; replaced by `KB_FRAMING` behavioral guidance that tells Claude to ask for specifics rather than claiming the race isn't extracted.
 7. **Branch A response upgrade (NEW 2026-04-26)** — Branch A still returns the bland "Got it — ready to analyze" when the *original* uploader re-uploads their own seeded PDF. Same fix shape as Branch B: lookup race info via `ingestion_log.race_id`, return `already_covered`. Small ingest route change, no schema impact, no frontend impact. Worth doing for consistency — the original uploader is typically an admin doing testing/maintenance and is the most likely person to notice the inconsistency. Sits next to Branch B in `/api/ingest/route.ts`.
 8. **Pending pre-check refinement (NEW 2026-04-26)** — `/api/ingest` short-circuits on any `pending_documents` row with non-empty `races_extracted` (treats it as "user is mid-pipeline"), even when the extraction is fully complete (`races_pending = []`). Stale completed pending rows mask the polished Branch B / coverage check UX until they expire 24h after race date. Fix: distinguish partial (`races_pending` non-empty → mid-pipeline, return ready) from complete (`races_pending` empty → fall through to dedup). Hit during Branch B verification on 2026-04-26 — manual `DELETE FROM pending_documents WHERE id = ...` worked as workaround. Low risk, ~30 min fix.
 9. **Pending re-entry UI** — on Brain page load, check `pending_documents` for unexpired unextracted races; surface prompt in chat. Edge case but real (browser closes mid-extraction).
