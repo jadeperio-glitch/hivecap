@@ -504,22 +504,20 @@ async function buildSchemaContext(
     console.log(`[brain/perf] horse "${h.name}" id=${h.id} | perfs.length=${perfs.length}`);
 
     if (perfs.length > 0) {
-      lines.push("Performance:");
+      lines.push("Most recent prior race result(s) on file (NOT the upcoming race):");
       for (const p of perfs) {
         const race = p.races;
         const track = race?.tracks;
         const trackName = track?.name ?? track?.abbreviation ?? "?";
-        const dateStr = race?.race_date ?? "?";
-        const raceNum = race?.race_number != null ? `R${race.race_number}` : "";
         const dist = race?.distance ?? "";
         const surf = race?.surface ?? "";
-        const beyer = p.beyer_figure != null ? `Beyer ${p.beyer_figure}` : "Beyer n/a";
+        const beyer = p.beyer_figure != null ? `Beyer ${p.beyer_figure}` : "Beyer null";
         const eq = p.equibase_speed_fig != null ? `Equibase ${p.equibase_speed_fig}` : "";
         const fracs = [p.frac_quarter, p.frac_half, p.frac_three_quarters, p.final_time].filter(Boolean).join(" / ");
         const style = p.running_style ? `style ${p.running_style}` : "";
-        const finish = p.finish_position != null ? `Finish: ${p.finish_position}` : "";
+        const finish = p.finish_position != null ? `Finish ${p.finish_position}` : "";
         lines.push(
-          `  - ${trackName} ${dateStr} ${raceNum} ${dist} ${surf} | ${beyer}${eq ? ` · ${eq}` : ""}${fracs ? ` · ${fracs}` : ""}${style ? ` · ${style}` : ""}${finish ? ` · ${finish}` : ""}`
+          `  - ${trackName} ${dist} ${surf} | ${beyer}${eq ? ` · ${eq}` : ""}${fracs ? ` · ${fracs}` : ""}${style ? ` · ${style}` : ""}${finish ? ` · ${finish}` : ""}`
         );
         if (p.trip_notes) lines.push(`    Trip: ${p.trip_notes}`);
         if (p.trouble_line) lines.push(`    Trouble: ${p.trouble_line}`);
