@@ -509,6 +509,7 @@ async function buildSchemaContext(
     lines.push("");
   }
 
+  console.log("[brain/schema] FULL contextText:\n" + lines.join("\n"));
   return { contextText: lines.join("\n"), horseCount: merged.length, saturated };
 }
 
