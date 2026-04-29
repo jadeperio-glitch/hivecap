@@ -302,7 +302,7 @@ async function buildSchemaContext(
           .in("id", horseIds)
           .or(`uploaded_by.eq.${userId},brain_layer.eq.shared`);
         scopedHorses = scoped ?? [];
-        console.log("[brain/schema] scoped horses fetched:", scopedHorses.length, "names:", scopedHorses.slice(0, 25).map((h: any) => h.name));
+        console.log("[brain/schema] scoped horses fetched:", scopedHorses.length);
       }
     }
   }
@@ -342,7 +342,7 @@ async function buildSchemaContext(
     }
     if (merged.length >= HORSE_BUDGET) break;
   }
-  console.log("[brain/schema] merged composition:", JSON.stringify(debugBucketCounts), "| scoped horse names in merged:", merged.filter(m => scopedHorses.some(s => s.id === m.id)).map(m => m.name));
+  console.log("[brain/schema] merged composition:", JSON.stringify(debugBucketCounts));
 
   // 5. Saturation check — log when shared Brain has more than what was returned
   const { count: totalSharedCount } = await admin
@@ -379,9 +379,6 @@ async function buildSchemaContext(
 
   const horseIds = merged.map((h) => h.id);
 
-  console.log("[brain/perf-Q] === starting perf query for", horseIds.length, "horseIds ===");
-  console.log("[brain/perf-Q] sample horseIds[0]:", horseIds[0]);
-
   const perfQuery = await admin
     .from("performance")
     .select(`
@@ -406,13 +403,8 @@ async function buildSchemaContext(
   const allPerfs = perfQuery.data;
   const allPerfsError = perfQuery.error;
 
-  console.log("[brain/perf-Q] perfQuery.error:", allPerfsError ? JSON.stringify(allPerfsError) : "none");
-  console.log("[brain/perf-Q] perfQuery.data type:", typeof allPerfs, "| isArray:", Array.isArray(allPerfs), "| length:", (allPerfs as any[] | null)?.length ?? "null");
-
-  if (allPerfs && allPerfs.length > 0) {
-    const sample = allPerfs[0] as any;
-    console.log("[brain/perf-Q] sample row keys:", Object.keys(sample));
-    console.log("[brain/perf-Q] sample horse_id:", sample.horse_id, "| beyer:", sample.beyer_figure, "| race:", JSON.stringify(sample.races));
+  if (allPerfsError) {
+    console.error("[brain/perf] performance query error:", JSON.stringify(allPerfsError));
   }
 
   type PerfRow = {
@@ -451,11 +443,6 @@ async function buildSchemaContext(
     list.push(p);
     perfByHorse.set(p.horse_id, list);
   }
-
-  console.log("[brain/perf-Q] perfByHorse.size:", perfByHorse.size);
-  console.log("[brain/perf-Q] perfByHorse keys (first 3):", Array.from(perfByHorse.keys()).slice(0, 3));
-  console.log("[brain/perf-Q] horseIds (first 3):", horseIds.slice(0, 3));
-  console.log("[brain/perf-Q] === end perf query diagnostic ===");
 
   // Connections batch query — no N+1
   const namesNeeded = new Set<string>();
@@ -501,8 +488,6 @@ async function buildSchemaContext(
       .sort((a, b) => (b.races?.race_date ?? "").localeCompare(a.races?.race_date ?? ""))
       .slice(0, 5);
 
-    console.log(`[brain/perf] horse "${h.name}" id=${h.id} | perfs.length=${perfs.length}`);
-
     if (perfs.length > 0) {
       lines.push("Most recent prior race result(s) on file (NOT the upcoming race):");
       for (const p of perfs) {
@@ -527,7 +512,6 @@ async function buildSchemaContext(
     lines.push("");
   }
 
-  console.log("[brain/schema] FULL contextText:\n" + lines.join("\n"));
   return { contextText: lines.join("\n"), horseCount: merged.length, saturated };
 }
 
@@ -740,7 +724,9 @@ export async function POST(request: Request) {
       `\n` +
       `The blocks below are extracted from official past performance documents and are your single source of truth for any horse, race, figure, or trainer/jockey data they contain. Each "## Horse Name" header denotes one horse. The "Performance:" line under each name lists the race details and figures extracted from the source document.\n` +
       `\n` +
-      `Read every block before composing your response. When the user asks about a race, scan the Performance line of each horse and identify which horses ran in (or are entered in) that race. List ALL of them. Use ONLY the figures shown.\n`;
+      `Read every block before composing your response. When the user asks about a race, scan the Performance line of each horse and identify which horses ran in (or are entered in) that race. List ALL of them. Use ONLY the figures shown.\n` +
+      `\n` +
+      `COVERAGE HONESTY: When listing horses for a specific race, if some horses in the race have null Beyer figures, null fractions, or null finish positions, do NOT silently fill in "—" without comment. Instead, briefly note in your response which horses have partial data and why if you can tell (e.g., "Three foreign-import horses (Danon Bourbon, Six Speed, Wonder Dean) don't have Beyer figures because their racing histories are in jurisdictions outside the North American Beyer system"). Users would rather see honest gaps than uniform "—" symbols that hide what's missing.\n`;
 
     const KB_CLOSING =
       `=========================================\n` +

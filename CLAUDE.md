@@ -73,6 +73,45 @@ AI-powered horse racing intelligence platform. Beta launch anchored to Kentucky 
 
 ---
 
+## Data state — Derby weekend (as of 2026-04-29)
+
+**Verified clean for May 1 (Friday Oaks card) and May 2 (Saturday Derby card):**
+
+May 1 — all 7 stakes races at 100% Beyer coverage. Kentucky Oaks (Race 13) at 100% across all 17 horses.
+
+May 2 — all 8 stakes races verified. Pat Day Mile (Race 8) at 100% Beyer/half/trip. Kentucky Derby (Race 12) at 85% Beyer (3 foreign-import nulls — Danon Bourbon, Six Speed, Wonder Dean — legit). Other races between 73-100% Beyer with explainable gaps (foreign imports, prior-race finish position quirks).
+
+All races have `coverage_complete = true` and `expected_field_size` matching `actual_rows` in the `performance` table.
+
+This state was achieved through systematic re-extraction on 2026-04-29 after a column-name bug was discovered (see "Known issues fixed").
+
+---
+
+## Known issues fixed (2026-04-29)
+
+**1. Performance query column-name bug.** `buildSchemaContext` was selecting `frac_final` and `frac_final_sec` from the `performance` table, but those columns don't exist — the actual finish split column is named `final_time` and `final_time_sec`. The error was silently swallowed because the destructure was `const { data: allPerfs }` (no error capture), causing `data` to be null on every request. Result: 100% of Brain responses had no Beyer figures, no fractions, no performance data — just horse identity and notes.
+
+**Fix:** Corrected the SELECT in `buildSchemaContext` to use `final_time, final_time_sec` instead of `frac_final, frac_final_sec`. Added an error-only log: `if (allPerfsError) console.error(...)` to surface the same class of bug if it recurs.
+
+**2. Mislabeled performance rows.** Existing `performance` rows linked to upcoming-race `race_id`s (e.g., May 2 Pat Day Mile) actually contain prior-race results: real `finish_position`, `trip_notes`, completed fractions. The extractor reads each horse's most recent prior race from the PP grid and writes it as if it were the upcoming-race entry.
+
+**Fix (rendering only, not data):** Updated the rendering loop in `buildSchemaContext` to label these rows as "Most recent prior race result(s) on file (NOT the upcoming race)" instead of pretending they belong to the upcoming race. The DB shape is unchanged; only the framing in the KB context is corrected.
+
+**3. Compound upload artifacts in shared Brain.** Multiple PDFs uploaded over time for the same race created duplicate empty rows ("skeleton rows" — name only, every figure null) plus inconsistent data shapes. 21+ rows were affected across May 2 races.
+
+**Fix:** Wipe-and-reseed pattern. Delete all `performance` rows for a problem race via `delete from performance where race_id = '<uuid>'`, then re-upload the canonical PDF as an admin user. The fresh extraction produces clean data with proper `brain_layer = 'shared'` and `uploaded_by = <admin_uuid>`. Verified working on May 1 races 7, 10 and May 2 races 7, 9, 10, 11, 12.
+
+**Pattern documented for future cleanup:**
+1. Identify broken race via SQL coverage query
+2. Delete performance rows for that race
+3. Sign in as admin (`HIVECAP_ADMIN_USER_IDS` UUIDs)
+4. Upload canonical PDF for that race
+5. Click race button in chat selector
+6. Verify extraction completed cleanly
+7. Confirm `brain_layer = 'shared'` and `uploaded_by` matches admin UUID
+
+---
+
 ## Supabase schema
 
 All migrations in `supabase/migrations/`. Run each in Supabase SQL Editor in order.
@@ -121,7 +160,7 @@ All migrations in `supabase/migrations/`. Run each in Supabase SQL Editor in ord
 
 **`races`** — one row per race; always resolved before horse on ingestion; key fields: `track_id FK→tracks, race_date, race_number, race_name, distance, surface, condition, purse, class_level, claiming_price, field_size, notes, source`; **coverage tracking (added 2026-04-26):** `expected_field_size INTEGER NULL`, `coverage_complete BOOLEAN NOT NULL DEFAULT FALSE`, `coverage_marked_by UUID REFERENCES auth.users`, `coverage_marked_at TIMESTAMPTZ`; partial index `idx_races_coverage_lookup` on `(track_id, race_date, race_number) WHERE coverage_complete = TRUE` for fast coverage check lookups; RLS: authenticated read all
 
-**`performance`** — core join table; one row per horse per race; key fields: `horse_id FK→horses, race_id FK→races`; per-figure source labels: `beyer_figure + beyer_source, equibase_speed_fig + equibase_source, timeform_rating + timeform_source`; dual-format fractions: `frac_quarter text + frac_quarter_sec decimal` (same for half, three-quarters, final); `running_style (E|EP|PS|C|S), trip_notes, trouble_line, brain_layer, uploaded_by, source`; `beyer_figure` NEVER zero-filled — null = not available; RLS: shared visible to all, personal scoped to owner
+**`performance`** — core join table; one row per horse per race; key fields: `horse_id FK→horses, race_id FK→races`; per-figure source labels: `beyer_figure + beyer_source, equibase_speed_fig + equibase_source, timeform_rating + timeform_source`; dual-format fractions: `frac_quarter text + frac_quarter_sec decimal` (same for half, three-quarters); finish split: `final_time text + final_time_sec decimal` (**NOT** `frac_final`/`frac_final_sec` — those columns don't exist; using them causes a silent query failure, see "Known issues fixed"); `running_style (E|EP|PS|C|S), trip_notes, trouble_line, brain_layer, uploaded_by, source`; `beyer_figure` NEVER zero-filled — null = not available; RLS: shared visible to all, personal scoped to owner
 
 **`track_profiles`** — updated daily during meet; `track_id FK→tracks, meet_date, distance, surface, condition, wire_to_wire_pct, avg_frac_quarter/half/three_quarters, speed_bias, rail_position, notes`; avg fractions computed from performance decimal columns, never stored raw
 
@@ -370,6 +409,8 @@ HIVECAP_ADMIN_USER_IDS=<uuid1>,<uuid2>   ← comma-separated; server-side only
 21. **Brain_layer drift propagation** — when a horse's `brain_layer` changes (e.g. personal → shared via admin upload), existing `performance` rows for that horse do not auto-update. Currently silent drift. Code-level fix needed: after any horse `brain_layer` update in `extract/route.ts`, run a follow-up `UPDATE performance SET brain_layer = $new WHERE horse_id = $id`.
 22. **Investigate hash short-circuit code path** — commit `5bfb2aa` added cross-user hash short-circuit in `/api/ingest/route.ts`, but the `ingestion_log.insert()` for `status='reused_from_shared'` is silently failing — no row written. The existing pre-check (Branch A/B/C) appears to catch the case before the new code fires. Need to trace which code path actually returns the "already in shared Brain" UI message and either fix the new code or delete it as dead. Commit `3d34ab3` added error logging for diagnosis but the new branch never fires in tests.
 23. **Marked Races UI "Field" column appears stale** — Race 10 May 1 shows 10 instead of 11 after backfill. Probably reading from a different column than `field_size`. Cosmetic only — investigate which column `CoverageClient` renders.
+24. ~~**Performance query crashing silently**~~ — **CLOSED 2026-04-29.** Column-name typo (`frac_final` → `final_time`) caused 100% of Brain responses to drop figures. Fixed in `buildSchemaContext`. Error-only logging added.
+25. ~~**21+ skeleton rows in shared Brain**~~ — **CLOSED 2026-04-29.** Wiped and re-extracted affected races on May 1 and May 2. All races now at acceptable data quality.
 
 ---
 
@@ -384,6 +425,10 @@ HIVECAP_ADMIN_USER_IDS=<uuid1>,<uuid2>   ← comma-separated; server-side only
 - **H-24:** "Post to Feed" smart shortcut — after a Brain response, offer a follow-up action: "Shrink to 2000 characters and post to feed?" Single click condenses the Brain output to 2000 chars and opens the Post to Feed modal pre-populated with the condensed version, brain_verified=true. Removes friction between good analysis and community publishing.
 - **H-25:** AE / scratched / entered status modeling. `performance` table treats every row as a starter. Real-world races have AEs (also-eligibles) that don't run unless someone scratches. Workaround for Derby 2026: manually delete AE performance rows after admin seeding (preserve horse rows for fast recovery). Proper fix: add `entry_status` enum to `performance`, default `entered`, filter in `buildSchemaContext` and coverage check. Decision required before any future race with AEs is seeded.
 - **H-26:** Coverage drift detection. If admin marks `coverage_complete=true` and someone later deletes performance rows (intentionally or via cascade), the coverage check correctly returns `not_covered (insufficient_rows)`, but the admin UI doesn't surface the drift. Add a "Drift" badge to the marked races table when actual_count != expected_field_size despite `coverage_complete=true`. Low priority — currently no automated process deletes performance rows.
+- **H-27:** Coverage flag system is decorative — `coverage_complete` is set manually with no validation. A race can be flagged complete while having 36% Beyer coverage. Post-Derby, `coverage_complete` should be auto-computed (e.g., actual_rows = expected_field_size AND > 80% Beyer coverage) or at minimum surface a warning when an admin marks a race complete with low coverage.
+- **H-28:** Equibase column 0% populated across all May 2 performance rows. Either Equibase isn't in any source PDFs, or extractor isn't pulling it. If genuinely unavailable, drop the column from the schema; if available but missed, fix extractor prompt. Decision required post-Derby.
+- **H-29:** Token budget on extraction. The Kentucky Derby (20-horse field with PP history) hits `max_tokens: 8192` and truncates. Required splitting the source PDF into two parts and uploading sequentially. Either raise max_tokens or design extraction to handle large fields natively.
+- **H-30:** Inconsistent finish_position extraction. Several races have 100% Beyer + trip_notes but partial or zero finish_position (May 2 Race 11 = 0%, May 2 Pat Day Mile = 67%, May 1 Edgewood = 57%). Indicates the extraction prompt isn't reliably pulling finish_position from the same line as the figures. Should be a small prompt fix; defer until post-Derby.
 
 ---
 
