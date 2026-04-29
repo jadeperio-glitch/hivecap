@@ -393,8 +393,8 @@ async function buildSchemaContext(
       frac_quarter, frac_quarter_sec,
       frac_half, frac_half_sec,
       frac_three_quarters, frac_three_quarters_sec,
-      frac_final, frac_final_sec,
-      final_time, running_style, weight_carried, odds,
+      final_time, final_time_sec,
+      running_style, weight_carried, odds,
       trip_notes, trouble_line,
       races (
         race_date, race_number, distance, surface, condition, class_level, purse,
@@ -431,9 +431,8 @@ async function buildSchemaContext(
     frac_half_sec: number | null;
     frac_three_quarters: string | null;
     frac_three_quarters_sec: number | null;
-    frac_final: string | null;
-    frac_final_sec: number | null;
     final_time: string | null;
+    final_time_sec: number | null;
     running_style: string | null;
     weight_carried: number | null;
     odds: number | null;
@@ -516,7 +515,7 @@ async function buildSchemaContext(
         const surf = race?.surface ?? "";
         const beyer = p.beyer_figure != null ? `Beyer ${p.beyer_figure}` : "Beyer n/a";
         const eq = p.equibase_speed_fig != null ? `Equibase ${p.equibase_speed_fig}` : "";
-        const fracs = [p.frac_quarter, p.frac_half, p.frac_three_quarters, p.frac_final].filter(Boolean).join(" / ");
+        const fracs = [p.frac_quarter, p.frac_half, p.frac_three_quarters, p.final_time].filter(Boolean).join(" / ");
         const style = p.running_style ? `style ${p.running_style}` : "";
         const finish = p.finish_position != null ? `Finish: ${p.finish_position}` : "";
         lines.push(
