@@ -174,7 +174,7 @@ Pre-check in `/api/ingest` before any PDF processing:
 
 **Horse retrieval (priority order):**
 - Personal horses always included (capped at 100, ordered by `created_at DESC`, never evicted)
-- Race scope detected from last 6 user messages: tracks (KNOWN_TRACKS list), dates (May 2 / 5/2 / 5-2-2026 forms), race numbers ("Race 8", "R8")
+- Race scope detected from last 6 user messages: tracks (KNOWN_TRACKS list), dates (May 2 / 5/2 / 5-2-2026 forms), race numbers ("Race 8", "R8"), race names (matched against races.race_name column — supports natural references like "Pat Day Mile," "Florida Derby," "Wood Memorial")
 - Scope resolves via `resolveScopedRaceIds` → track name lookup → races query → performance horse_ids → all horses in those races pulled, no row limit per race
 - Top up with recent shared horses (`LIMIT 50`, `created_at DESC`) for general-context queries
 - Final assembly capped at 100 horses total, priority: personal → scoped → topup; deduped by id

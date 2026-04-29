@@ -115,22 +115,62 @@ interface RaceScope {
   tracks: string[];
   dates: string[];
   raceNumbers: number[];
+  raceNames: string[];
   hasAny: boolean;
 }
 
-function extractRaceScope(messages: Array<{ role: string; content: string }>): RaceScope {
+async function detectRaceNames(
+  admin: ReturnType<typeof createAdminClient>,
+  text: string
+): Promise<string[]> {
+  // Pull all distinct race_names from races table — small set, cheap query
+  const { data: races } = await admin
+    .from("races")
+    .select("race_name")
+    .not("race_name", "is", null);
+
+  if (!races || races.length === 0) return [];
+
+  const distinctNames = Array.from(
+    new Set(
+      races
+        .map((r: any) => r.race_name)
+        .filter((n: any) => typeof n === "string" && n.trim().length >= 4)
+    )
+  );
+
+  const lowerText = text.toLowerCase();
+  const hits: string[] = [];
+  for (const name of distinctNames) {
+    if (lowerText.includes((name as string).toLowerCase())) {
+      hits.push(name as string);
+    }
+  }
+  return hits;
+}
+
+async function extractRaceScope(
+  admin: ReturnType<typeof createAdminClient>,
+  messages: Array<{ role: string; content: string }>
+): Promise<RaceScope> {
   const userMessages = messages.filter((m) => m.role === "user").slice(-6);
   const blob = userMessages.map((m) => m.content).join("\n");
 
   const tracks = detectTracks(blob);
   const dates = detectRaceDates(blob);
   const raceNumbers = detectRaceNumbers(blob);
+  const raceNames = await detectRaceNames(admin, blob);
 
   return {
     tracks,
     dates,
     raceNumbers,
-    hasAny: tracks.length > 0 || dates.length > 0 || raceNumbers.length > 0,
+    raceNames,
+    hasAny:
+      tracks.length > 0 ||
+      dates.length > 0 ||
+      raceNumbers.length > 0 ||
+      raceNames.length > 0,
   };
 }
 
@@ -139,6 +179,18 @@ async function resolveScopedRaceIds(
   scope: RaceScope,
 ): Promise<string[]> {
   if (!scope.hasAny) return [];
+
+  // Race name is the most specific signal — resolve by name first
+  if (scope.raceNames.length > 0) {
+    const { data: nameRaces } = await admin
+      .from("races")
+      .select("id")
+      .in("race_name", scope.raceNames)
+      .limit(20);
+    const ids = (nameRaces ?? []).map((r: any) => r.id);
+    if (ids.length > 0) return ids;
+    // fall through if name match returned nothing (typo, partial match, etc.)
+  }
 
   let trackIds: string[] = [];
   if (scope.tracks.length > 0) {
@@ -175,8 +227,8 @@ async function buildSchemaContext(
   userId: string,
   conversationMessages: Array<{ role: string; content: string }>,
 ): Promise<{ contextText: string; horseCount: number; saturated: boolean }> {
-  const scope = extractRaceScope(conversationMessages);
-  console.log("[brain/schema] scope detected:", scope.hasAny, JSON.stringify({ tracks: scope.tracks, dates: scope.dates, raceNumbers: scope.raceNumbers }));
+  const scope = await extractRaceScope(admin, conversationMessages);
+  console.log("[brain/schema] scope detected:", scope.hasAny, JSON.stringify({ tracks: scope.tracks, dates: scope.dates, raceNumbers: scope.raceNumbers, raceNames: scope.raceNames }));
 
   // 1. All personal horses, freshest first — never evicted
   const { data: personalHorses } = await admin
